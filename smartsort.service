@@ -1,0 +1,13 @@
+[Unit]
+Description=SmartSort File Organizer Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/websrp/project/smartsort/main.py --service
+Restart=on-failure
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/websrp/.Xauthority
+
+[Install]
+WantedBy=default.target

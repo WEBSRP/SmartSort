@@ -1,0 +1,35 @@
+{
+  "downloads_folder": "/home/websrp/Downloads",
+  "destination_base": "/home/websrp",
+  "large_file_threshold_gb": 2.5,
+  "enable_hash_verification": true,
+  "enable_notifications": true,
+  "enable_duplicate_detection": true,
+  "categories": {
+    "Videos": {
+      "extensions": [".mkv", ".mp4", ".avi", ".mov"],
+      "subfolders": {
+        "Big_Videos": "Videos/Big_Videos",
+        "Small_Videos": "Videos"
+      }
+    },
+    "Documents": {
+      "extensions": [".pdf", ".docx", ".pptx", ".xlsx"]
+    },
+    "Archives": {
+      "extensions": [".zip", ".rar", ".7z", ".tar.gz"]
+    },
+    "Disk Images": {
+      "extensions": [".iso"]
+    },
+    "Images": {
+      "extensions": [".jpg", ".jpeg", ".png", ".webp"]
+    },
+    "Cybersecurity": {
+      "keywords": ["nmap", "burp", "wireshark", "metasploit", "rockyou", "wordlist", "kali", "parrot"]
+    },
+    "College": {
+      "keywords": ["assignment", "lecture", "lab", "semester", "notes", "ppt"]
+    }
+  }
+}
