@@ -42,3 +42,21 @@ class FileUtils:
             if os.path.exists(dst):
                 os.remove(dst)
             return False, str(e)
+
+    @staticmethod
+    def get_unique_path(path: str) -> str:
+        """
+        If path exists, append _1, _2, etc. to make it unique.
+        """
+        if not os.path.exists(path):
+            return path
+        dir_name, file_name = os.path.split(path)
+        base_name, ext = os.path.splitext(file_name)
+        counter = 1
+        while True:
+            new_file_name = f"{base_name}_{counter}{ext}"
+            new_path = os.path.join(dir_name, new_file_name)
+            if not os.path.exists(new_path):
+                return new_path
+            counter += 1
+

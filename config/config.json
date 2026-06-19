@@ -1,73 +1,224 @@
 {
     "downloads_folder": "/home/websrp/Downloads",
     "destination_base": "/home/websrp",
-    "large_file_threshold_gb": 1,
+    "large_file_threshold_gb": 1073741824,
     "enable_hash_verification": true,
     "enable_notifications": true,
     "enable_duplicate_detection": true,
-    "categories": {
-        "Videos": {
-            "extensions": [
-                ".mkv",
-                ".mp4",
-                ".avi",
-                ".mov"
+    "rules": [
+        {
+            "id": "img_low",
+            "name": "Low Quality Images",
+            "enabled": true,
+            "priority": 1,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp",
+                        ".gif",
+                        ".bmp"
+                    ]
+                },
+                {
+                    "type": "size",
+                    "operator": "<",
+                    "value": "1MB"
+                }
             ],
-            "subfolders": {
-                "Big_Videos": "Videos/Big_Videos",
-                "Small_Videos": "Videos"
-            }
+            "destination": "Pictures/Low_Quality/{extension}"
         },
-        "Documents": {
-            "extensions": [
-                ".pdf",
-                ".docx",
-                ".pptx",
-                ".xlsx"
-            ]
+        {
+            "id": "img_med",
+            "name": "Medium Quality Images",
+            "enabled": true,
+            "priority": 2,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp",
+                        ".gif",
+                        ".bmp"
+                    ]
+                },
+                {
+                    "type": "size",
+                    "operator": ">=",
+                    "value": "1MB"
+                },
+                {
+                    "type": "size",
+                    "operator": "<",
+                    "value": "5MB"
+                }
+            ],
+            "destination": "Pictures/Medium_Quality/{extension}"
         },
-        "Archives": {
-            "extensions": [
-                ".zip",
-                ".rar",
-                ".7z",
-                ".tar.gz"
-            ]
+        {
+            "id": "img_high",
+            "name": "High Quality Images",
+            "enabled": true,
+            "priority": 3,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp",
+                        ".gif",
+                        ".bmp"
+                    ]
+                },
+                {
+                    "type": "size",
+                    "operator": ">=",
+                    "value": "5MB"
+                }
+            ],
+            "destination": "Pictures/High_Quality/{extension}"
         },
-        "Disk Images": {
-            "extensions": [
-                ".iso"
-            ]
+        {
+            "id": "legacy_videos_big",
+            "name": "Videos (Big)",
+            "enabled": true,
+            "priority": 4,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".mkv",
+                        ".mp4",
+                        ".avi",
+                        ".mov"
+                    ]
+                },
+                {
+                    "type": "size",
+                    "operator": ">=",
+                    "value": "1GB"
+                }
+            ],
+            "destination": "Videos/Big_Videos"
         },
-        "Images": {
-            "extensions": [
-                ".jpg",
-                ".jpeg",
-                ".png",
-                ".webp"
-            ]
+        {
+            "id": "legacy_videos_small",
+            "name": "Videos",
+            "enabled": true,
+            "priority": 5,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".mkv",
+                        ".mp4",
+                        ".avi",
+                        ".mov"
+                    ]
+                }
+            ],
+            "destination": "Videos"
         },
-        "Cybersecurity": {
-            "keywords": [
-                "nmap",
-                "burp",
-                "wireshark",
-                "metasploit",
-                "rockyou",
-                "wordlist",
-                "kali",
-                "parrot"
-            ]
+        {
+            "id": "legacy_documents",
+            "name": "Documents",
+            "enabled": true,
+            "priority": 6,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".pdf",
+                        ".docx",
+                        ".pptx",
+                        ".xlsx"
+                    ]
+                }
+            ],
+            "destination": "Documents"
         },
-        "College": {
-            "keywords": [
-                "assignment",
-                "lecture",
-                "lab",
-                "semester",
-                "notes",
-                "ppt"
-            ]
+        {
+            "id": "legacy_archives",
+            "name": "Archives",
+            "enabled": true,
+            "priority": 7,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".zip",
+                        ".rar",
+                        ".7z",
+                        ".tar.gz"
+                    ]
+                }
+            ],
+            "destination": "Archives"
+        },
+        {
+            "id": "legacy_disk images",
+            "name": "Disk Images",
+            "enabled": true,
+            "priority": 8,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".iso"
+                    ]
+                }
+            ],
+            "destination": "ISO"
+        },
+        {
+            "id": "legacy_cybersecurity",
+            "name": "Cybersecurity",
+            "enabled": true,
+            "priority": 9,
+            "conditions": [
+                {
+                    "type": "filename",
+                    "value": [
+                        "nmap",
+                        "burp",
+                        "wireshark",
+                        "metasploit",
+                        "rockyou",
+                        "wordlist",
+                        "kali",
+                        "parrot"
+                    ]
+                }
+            ],
+            "destination": "Cybersecurity"
+        },
+        {
+            "id": "legacy_college",
+            "name": "College",
+            "enabled": true,
+            "priority": 10,
+            "conditions": [
+                {
+                    "type": "filename",
+                    "value": [
+                        "assignment",
+                        "lecture",
+                        "lab",
+                        "semester",
+                        "notes",
+                        "ppt"
+                    ]
+                }
+            ],
+            "destination": "Documents/College"
         }
-    }
+    ]
 }
