@@ -2,6 +2,7 @@ import json
 import os
 import copy
 import shutil
+from pathlib import Path
 
 class ConfigManager:
     def __init__(self, config_path="config/config.json", default_path="config/default_config.json"):
@@ -128,7 +129,11 @@ class ConfigManager:
         self.config = config
 
     def get(self, key, default=None):
-        return self.config.get(key, default)
+        val = self.config.get(key, default)
+        if key in ("downloads_folder", "destination_base") and isinstance(val, str):
+            if val.startswith("~"):
+                return str(Path(val).expanduser())
+        return val
 
     def set(self, key, value):
         new_config = copy.deepcopy(self.config)

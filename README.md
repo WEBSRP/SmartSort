@@ -18,6 +18,9 @@ SmartSort is an offline Linux file automation and organization platform built in
 * **Rule Testing Sandbox**: Contains a Rule Tester tab where users can preview matching rules, priorities, and destination templates for virtual filenames and sizes.
 * **Automatic Config Backups**: Automatically creates `.bak` backups before config writes, restoring from backup if the primary config is corrupted.
 * **Logging and Reports**: Creates daily logs and generates detailed implementation, migration, and testing reports under `reports/`.
+* **Portable Configuration**: Employs home-directory expansion (`~`) so settings work out-of-the-box across different Linux user accounts without hardcoded user paths.
+* **No Hardcoded User Paths**: Eliminates developer-specific absolute paths from the default configuration.
+* **Works Across Linux User Accounts**: Automatically resolves home directories dynamically based on the current active user.
 * **Fully Offline Operation**: Zero cloud calls, telemetry, or external dependencies.
 
 ---
@@ -115,6 +118,8 @@ Destinations support template variables:
 
 ## Installation
 
+SmartSort is designed for Linux systems. No path modifications are required after installation. The application automatically detects and adapts to the current user's home directory.
+
 ### 1. Debian / Ubuntu System Dependencies
 Ensure Python 3 and basic graphical environment tools are installed:
 ```bash
@@ -164,7 +169,7 @@ systemctl --user status smartsort.service
 ## Configuration
 
 Settings are stored in `config/config.json` and configurable in the GUI Settings panel:
-* **Downloads folder**: Path to directory monitored by the observer.
+* **Downloads folder**: Path to directory monitored by the observer. SmartSort automatically resolves `~/Downloads` to the current user's Downloads folder.
 * **Notifications**: Toggle to push DBus alerts for successful transfers and errors.
 * **Duplicate detection**: Check SHA256 hashes of matching files. If identical, skips transfer and preserves the original.
 * **Conflict resolution**: Collision policy on filename overlaps:
@@ -172,6 +177,34 @@ Settings are stored in `config/config.json` and configurable in the GUI Settings
   - `overwrite`: Overwrites the target file.
   - `skip`: Skips copying.
 * **Large file threshold**: Size string (e.g., `2.5GB`, `500MB`) specifying size threshold for large file warnings.
+
+---
+
+## Path Handling
+
+SmartSort automatically resolves user home directories dynamically based on the current active user, meaning that no user-specific hardcoded paths are required in the default configuration files.
+
+### Example
+
+**Configuration:**
+```json
+{
+  "downloads_folder": "~/Downloads"
+}
+```
+
+**Runtime Expansion:**
+* User **alice**: `~/Downloads` &rarr; `/home/alice/Downloads`
+* User **bob**: `~/Downloads` &rarr; `/home/bob/Downloads`
+
+---
+
+## Technical Notes
+
+Path resolution uses:
+* `pathlib.Path.expanduser()`
+
+This allows SmartSort to automatically adapt to the active Linux user at runtime without requiring manual path modifications in `config/config.json`.
 
 ---
 
@@ -200,10 +233,12 @@ Before activating a rule, use the **Rule Tester** sandbox tab in the GUI to veri
 ## Reports
 
 System logs and development summaries are stored under `reports/`:
-* [phase2_implementation_report.md](file:///home/websrp/project/smartsort/reports/phase2_implementation_report.md): Refactoring changes, issue tracker, architecture layouts, and root cause analysis.
-* [test_results.md](file:///home/websrp/project/smartsort/reports/test_results.md): Pytest execution log results.
-* [migration_notes.md](file:///home/websrp/project/smartsort/reports/migration_notes.md): Notes on automatic conversions of legacy categories configurations.
-* [size_threshold_fix_report.md](file:///home/websrp/project/smartsort/reports/size_threshold_fix_report.md): Large file settings size parsing bugfix report.
+* [phase2_implementation_report.md](reports/phase2_implementation_report.md): Refactoring changes, issue tracker, architecture layouts, and root cause analysis.
+* [test_results.md](reports/test_results.md): Pytest execution log results.
+* [migration_notes.md](reports/migration_notes.md): Notes on automatic conversions of legacy categories configurations.
+* [size_threshold_fix_report.md](reports/size_threshold_fix_report.md): Large file settings size parsing bugfix report.
+* [path_portability_fix_report.md](reports/path_portability_fix_report.md): SmartSort portability improvement report describing home directory tilde expansion.
+* [readme_update_report.md](reports/readme_update_report.md): Report on the documentation updates and portability validation.
 
 ---
 
@@ -229,10 +264,20 @@ The following enhancements are planned for future updates:
 
 ---
 
+## Changelog
+
+### Path Portability Improvement
+
+* Removed user-specific default paths
+* Added automatic home-directory expansion
+* Improved cross-user compatibility
+
+---
+
 ## Author
 
 * **Author**: Soumya Ranjan Parida
-* **GitHub**: [WEBSRP/SmartSort](https://github.com/WEBSRP/SmartSort)
+* **GitHub**: [SmartSort Repository](https://github.com/smartsort-org/SmartSort)
 
 ---
 

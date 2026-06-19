@@ -1,6 +1,6 @@
 {
-  "downloads_folder": "/home/websrp/Downloads",
-  "destination_base": "/home/websrp",
+  "downloads_folder": "~/Downloads",
+  "destination_base": "~",
   "large_file_threshold_gb": 2.5,
   "enable_hash_verification": true,
   "enable_notifications": true,

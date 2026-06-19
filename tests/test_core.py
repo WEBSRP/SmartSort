@@ -554,3 +554,56 @@ def test_large_file_threshold_size_parsing(temp_dir):
         
     mgr2 = ConfigManager(config_path=str(config_path), default_path=str(default_path))
     assert mgr2.get("large_file_threshold_gb") == 1073741824
+
+def test_path_portability_expansion(temp_dir):
+    from src.utils.config import ConfigManager
+    from pathlib import Path
+    import json
+    
+    config_path = temp_dir / "config.json"
+    default_path = temp_dir / "default_config.json"
+    
+    # 1. Default config with tildes
+    default_data = {
+        "downloads_folder": "~/Downloads",
+        "destination_base": "~",
+        "large_file_threshold_gb": 2684354560,
+        "enable_hash_verification": True,
+        "enable_notifications": True,
+        "enable_duplicate_detection": True,
+        "rules": []
+    }
+    
+    with open(default_path, "w") as f:
+        json.dump(default_data, f)
+        
+    mgr = ConfigManager(config_path=str(config_path), default_path=str(default_path))
+    
+    # Verify tilde is expanded
+    assert mgr.get("downloads_folder") == str(Path("~/Downloads").expanduser())
+    assert mgr.get("destination_base") == str(Path("~").expanduser())
+    
+    # Verify raw config stored contains tildes
+    with open(config_path, "r") as f:
+        stored_data = json.load(f)
+        assert stored_data["downloads_folder"] == "~/Downloads"
+        assert stored_data["destination_base"] == "~"
+        
+    # 2. Custom absolute path is respected
+    custom_abs_path = str(temp_dir / "CustomDownloads")
+    legacy_user_data = {
+        "downloads_folder": custom_abs_path,
+        "destination_base": str(temp_dir / "CustomBase"),
+        "large_file_threshold_gb": 2684354560,
+        "enable_hash_verification": True,
+        "enable_notifications": True,
+        "enable_duplicate_detection": True,
+        "rules": []
+    }
+    with open(config_path, "w") as f:
+        json.dump(legacy_user_data, f)
+        
+    mgr2 = ConfigManager(config_path=str(config_path), default_path=str(default_path))
+    assert mgr2.get("downloads_folder") == custom_abs_path
+    assert mgr2.get("destination_base") == str(temp_dir / "CustomBase")
+
