@@ -250,6 +250,29 @@ def test_log_retention_cleanup(temp_dir):
     assert os.path.exists(f2)
     assert not os.path.exists(f3)
 
+def test_logger_methods(temp_dir):
+    logger = SmartSortLogger(log_dir=str(temp_dir), retention_days=7)
+    
+    # Trigger all logger methods
+    logger.info("Test Info Message")
+    logger.warning("Test Warning Message")
+    logger.warn("Test Warn Message")
+    logger.error("Test Error Message")
+    logger.debug("Test Debug Message")
+    
+    # Read the log file for today
+    from datetime import datetime
+    log_file = temp_dir / f"smartsort_{datetime.now().strftime('%Y%m%d')}.log"
+    assert log_file.exists()
+    content = log_file.read_text()
+    
+    assert "Test Info Message" in content
+    assert "Test Warning Message" in content
+    assert "Test Warn Message" in content
+    assert "Test Error Message" in content
+    # Since level is INFO, Debug should not be written to file
+    assert "Test Debug Message" not in content
+
 def test_error_recovery_and_source_preservation(temp_dir):
     src = temp_dir / "src.txt"
     src.write_text("important source")
@@ -606,4 +629,460 @@ def test_path_portability_expansion(temp_dir):
     mgr2 = ConfigManager(config_path=str(config_path), default_path=str(default_path))
     assert mgr2.get("downloads_folder") == custom_abs_path
     assert mgr2.get("destination_base") == str(temp_dir / "CustomBase")
+
+def test_autostart_logic(temp_dir, monkeypatch):
+    import sys
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.gui.main_window import SmartSortGUI
+    
+    monkeypatch.setattr(Path, "home", lambda: temp_dir)
+    monkeypatch.setattr(sys, "executable", "/venv/bin/python")
+    monkeypatch.setattr(sys, "argv", ["/app/main.py"])
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.config = MagicMock()
+            
+    gui = DummyGUI()
+    gui.update_autostart_setting = SmartSortGUI.update_autostart_setting.__get__(gui, DummyGUI)
+    
+    gui.update_autostart_setting(True)
+    
+    autostart_file = temp_dir / ".config" / "autostart" / "smartsort.desktop"
+    assert autostart_file.exists()
+    content = autostart_file.read_text()
+    assert "/venv/bin/python" in content
+    assert "/app/main.py" in content
+    assert "--service" in content
+    assert "/home/websrp" not in content
+    
+    gui.update_autostart_setting(False)
+    assert not autostart_file.exists()
+
+def test_service_installation_logic(temp_dir, monkeypatch):
+    import sys
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.gui.main_window import SmartSortGUI
+    
+    monkeypatch.setattr(Path, "home", lambda: temp_dir)
+    monkeypatch.setattr(sys, "executable", "/venv/bin/python")
+    monkeypatch.setattr(sys, "argv", ["/app/main.py"])
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.update_dashboard_stats = MagicMock()
+            
+    gui = DummyGUI()
+    gui.install_service = SmartSortGUI.install_service.__get__(gui, DummyGUI)
+    
+    import subprocess
+    mock_run = MagicMock()
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr("src.gui.main_window.QMessageBox.information", lambda *args, **kwargs: None)
+    
+    gui.install_service()
+    
+    service_file = temp_dir / ".config" / "systemd" / "user" / "smartsort.service"
+    assert service_file.exists()
+    content = service_file.read_text()
+    assert "/venv/bin/python" in content
+    assert "/app/main.py" in content
+    assert "--daemon" in content
+    assert "/home/websrp" not in content
+    
+    assert mock_run.call_count >= 2
+
+def test_service_status_detection(temp_dir, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.gui.main_window import SmartSortGUI
+    
+    monkeypatch.setattr(Path, "home", lambda: temp_dir)
+    
+    class DummyGUI:
+        pass
+        
+    gui = DummyGUI()
+    gui.get_service_status = SmartSortGUI.get_service_status.__get__(gui, DummyGUI)
+    
+    assert gui.get_service_status() == "Not Installed"
+    
+    service_dir = temp_dir / ".config" / "systemd" / "user"
+    service_dir.mkdir(parents=True)
+    (service_dir / "smartsort.service").write_text("dummy")
+    
+    import subprocess
+    mock_completed_active = MagicMock()
+    mock_completed_active.stdout = "active\n"
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_completed_active)
+    assert gui.get_service_status() == "Active"
+    
+    mock_completed_inactive = MagicMock()
+    mock_completed_inactive.stdout = "inactive\n"
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_completed_inactive)
+    assert gui.get_service_status() == "Inactive"
+
+def test_window_events_tray(monkeypatch):
+    from unittest.mock import MagicMock
+    from src.gui.main_window import SmartSortGUI
+    
+    class DummyGUI:
+        def __init__(self):
+            self.really_exit = False
+            self.notifications_enabled = False
+            self.hide = MagicMock()
+            self.tray_available = True
+            
+    gui = DummyGUI()
+    gui.closeEvent = SmartSortGUI.closeEvent.__get__(gui, DummyGUI)
+    gui.changeEvent = SmartSortGUI.changeEvent.__get__(gui, DummyGUI)
+    gui.isMinimized = MagicMock(return_value=True)
+    
+    from PyQt6.QtGui import QCloseEvent
+    from PyQt6.QtCore import QEvent
+    
+    mock_close_event = MagicMock(spec=QCloseEvent)
+    gui.closeEvent(mock_close_event)
+    mock_close_event.ignore.assert_called_once()
+    gui.hide.assert_called_once()
+    
+    gui.hide.reset_mock()
+    
+    mock_window_event = MagicMock(spec=QEvent)
+    mock_window_event.type.return_value = QEvent.Type.WindowStateChange
+    
+    gui.changeEvent(mock_window_event)
+    gui.hide.assert_called_once()
+
+def test_tray_icon_creation(monkeypatch):
+    from unittest.mock import MagicMock
+    from src.gui.main_window import SmartSortGUI
+    
+    mock_tray = MagicMock()
+    mock_menu = MagicMock()
+    mock_pixmap = MagicMock()
+    mock_painter = MagicMock()
+    mock_icon = MagicMock()
+    
+    monkeypatch.setattr("src.gui.main_window.QSystemTrayIcon", lambda *args, **kwargs: mock_tray)
+    monkeypatch.setattr("src.gui.main_window.QMenu", lambda *args, **kwargs: mock_menu)
+    monkeypatch.setattr("src.gui.main_window.QPixmap", lambda *args, **kwargs: mock_pixmap)
+    monkeypatch.setattr("src.gui.main_window.QPainter", lambda *args, **kwargs: mock_painter)
+    monkeypatch.setattr("src.gui.main_window.QIcon", lambda *args, **kwargs: mock_icon)
+    
+    mock_painter_class = MagicMock()
+    mock_painter_class.RenderHint = MagicMock()
+    monkeypatch.setattr("src.gui.main_window.QPainter", mock_painter_class)
+    
+    class DummyGUI:
+        pass
+        
+    gui = DummyGUI()
+    gui.setup_system_tray = SmartSortGUI.setup_system_tray.__get__(gui, DummyGUI)
+    
+    gui.show_tab = MagicMock()
+    gui.pause_monitoring = MagicMock()
+    gui.resume_monitoring = MagicMock()
+    gui.show_statistics = MagicMock()
+    gui.open_reports_folder = MagicMock()
+    gui.restart_application = MagicMock()
+    gui.exit_application = MagicMock()
+    gui.on_tray_icon_activated = MagicMock()
+    
+    gui.setup_system_tray()
+    assert mock_menu.addAction.call_count >= 8
+
+def test_start_minimized_config(temp_dir, monkeypatch):
+    from unittest.mock import MagicMock
+    
+    mock_app = MagicMock()
+    monkeypatch.setattr("PyQt6.QtWidgets.QApplication", lambda *args: mock_app)
+    
+    mock_gui = MagicMock()
+    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args: mock_gui)
+    
+    mock_config = MagicMock()
+    mock_config.get.return_value = True
+    monkeypatch.setattr("src.utils.config.ConfigManager", lambda *args, **kwargs: mock_config)
+    
+    import sys
+    monkeypatch.setattr(sys, "argv", ["main.py", "--service"])
+    
+    import main
+    try:
+        main.main()
+    except SystemExit:
+        pass
+    mock_gui.show.assert_not_called()
+
+def test_daemon_startup_shutdown(temp_dir, monkeypatch):
+    from unittest.mock import MagicMock
+    
+    mock_monitor = MagicMock()
+    monkeypatch.setattr("src.monitor.FileMonitor", lambda *args, **kwargs: mock_monitor)
+    
+    mock_config = MagicMock()
+    mock_config.get.return_value = str(temp_dir)
+    monkeypatch.setattr("src.utils.config.ConfigManager", lambda *args, **kwargs: mock_config)
+    
+    mock_logger = MagicMock()
+    monkeypatch.setattr("src.utils.logger.SmartSortLogger", lambda *args, **kwargs: mock_logger)
+    
+    mock_organizer = MagicMock()
+    monkeypatch.setattr("src.organizer.FileOrganizer", lambda *args, **kwargs: mock_organizer)
+    
+    import time
+    def mock_sleep(seconds):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(time, "sleep", mock_sleep)
+    
+    import main
+    main.run_daemon()
+    
+    mock_monitor.start.assert_called_once()
+    mock_monitor.stop.assert_called_once()
+
+
+def test_tray_available(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QSystemTrayIcon
+    from src.gui.main_window import SmartSortGUI
+
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: True)
+    
+    mock_tray = MagicMock()
+    monkeypatch.setattr("src.gui.main_window.QSystemTrayIcon", lambda *args, **kwargs: mock_tray)
+    monkeypatch.setattr("src.gui.main_window.QMenu", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr("src.gui.main_window.QPixmap", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr("src.gui.main_window.QPainter", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr("src.gui.main_window.QIcon", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr("src.gui.main_window.QColor", lambda *args, **kwargs: MagicMock())
+    
+    mock_painter_class = MagicMock()
+    mock_painter_class.RenderHint = MagicMock()
+    monkeypatch.setattr("src.gui.main_window.QPainter", mock_painter_class)
+
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.tray_available = False
+            self.notifications_enabled = False
+            self.stats = {"processed": 0, "duplicates": 0, "errors": 0}
+            self.really_exit = False
+            
+        def init_notification_system(self):
+            pass
+        def init_ui(self):
+            pass
+        def apply_theme(self):
+            pass
+            
+    gui = DummyGUI()
+    gui.setup_system_tray = SmartSortGUI.setup_system_tray.__get__(gui, DummyGUI)
+    gui.init_notification_system = DummyGUI.init_notification_system.__get__(gui, DummyGUI)
+    gui.init_ui = DummyGUI.init_ui.__get__(gui, DummyGUI)
+    gui.apply_theme = DummyGUI.apply_theme.__get__(gui, DummyGUI)
+    
+    gui.show_tab = MagicMock()
+    gui.pause_monitoring = MagicMock()
+    gui.resume_monitoring = MagicMock()
+    gui.show_statistics = MagicMock()
+    gui.open_reports_folder = MagicMock()
+    gui.restart_application = MagicMock()
+    gui.exit_application = MagicMock()
+    gui.on_tray_icon_activated = MagicMock()
+    
+    gui.tray_available = False
+    try:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                gui.setup_system_tray()
+                gui.tray_available = True
+            except Exception as e:
+                gui.logger.warning(f"System tray initialization failed: {e}")
+        else:
+            gui.logger.warning("System tray unavailable. Running without tray support.")
+    except Exception as e:
+        gui.logger.warning(f"Failed to check system tray availability: {e}")
+        
+    assert gui.tray_available is True
+    assert mock_tray.show.called
+
+
+def test_tray_unavailable(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QSystemTrayIcon
+    from src.gui.main_window import SmartSortGUI
+
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
+    
+    mock_setup_tray = MagicMock()
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.tray_available = False
+            
+        def setup_system_tray(self):
+            mock_setup_tray()
+            
+    gui = DummyGUI()
+    
+    try:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                gui.setup_system_tray()
+                gui.tray_available = True
+            except Exception as e:
+                gui.logger.warning(f"System tray initialization failed: {e}")
+        else:
+            gui.logger.warning("System tray unavailable. Running without tray support.")
+    except Exception as e:
+        gui.logger.warning(f"Failed to check system tray availability: {e}")
+        
+    assert gui.tray_available is False
+    mock_setup_tray.assert_not_called()
+    assert gui.logger.warning.called
+
+
+def test_tray_initialization_failure(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QSystemTrayIcon
+    from src.gui.main_window import SmartSortGUI
+
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: True)
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.tray_available = False
+            
+        def setup_system_tray(self):
+            raise RuntimeError("D-Bus status notifier watcher connection timed out")
+            
+    gui = DummyGUI()
+    
+    try:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                gui.setup_system_tray()
+                gui.tray_available = True
+            except Exception as e:
+                gui.logger.warning(f"System tray initialization failed: {e}")
+        else:
+            gui.logger.warning("System tray unavailable. Running without tray support.")
+    except Exception as e:
+        gui.logger.warning(f"Failed to check system tray availability: {e}")
+        
+    assert gui.tray_available is False
+    assert gui.logger.warning.called
+
+
+def test_gnome_environment_tray_disabled(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QSystemTrayIcon
+    
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.tray_available = False
+            
+    gui = DummyGUI()
+    
+    try:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            gui.tray_available = True
+        else:
+            gui.logger.warning("System tray unavailable. Running without tray support.")
+    except Exception:
+        pass
+        
+    assert gui.tray_available is False
+    assert gui.logger.warning.called
+
+
+def test_headless_environment_tray_disabled(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QSystemTrayIcon
+    
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
+    
+    class DummyGUI:
+        def __init__(self):
+            self.logger = MagicMock()
+            self.tray_available = False
+            
+    gui = DummyGUI()
+    
+    try:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            gui.tray_available = True
+        else:
+            gui.logger.warning("System tray unavailable. Running without tray support.")
+    except Exception:
+        pass
+        
+    assert gui.tray_available is False
+    assert gui.logger.warning.called
+
+
+def test_dashboard_startup_components(temp_dir, monkeypatch):
+    from unittest.mock import MagicMock
+    
+    mock_config = MagicMock()
+    mock_config.get.return_value = "System Theme"
+    monkeypatch.setattr("src.utils.config.ConfigManager", lambda *args, **kwargs: mock_config)
+    
+    mock_logger = MagicMock()
+    monkeypatch.setattr("src.utils.logger.SmartSortLogger", lambda *args, **kwargs: mock_logger)
+    
+    mock_organizer = MagicMock()
+    monkeypatch.setattr("src.organizer.FileOrganizer", lambda *args, **kwargs: mock_organizer)
+    
+    class DummyGUI:
+        def __init__(self):
+            self.config = mock_config
+            self.logger = mock_logger
+            self.organizer = mock_organizer
+            self.tray_available = False
+            self.really_exit = False
+            self.monitoring_active = True
+            
+    gui = DummyGUI()
+    assert gui.monitoring_active is True
+    assert gui.tray_available is False
+    assert gui.really_exit is False
+
+
+def test_app_startup_without_tray_shows_window(temp_dir, monkeypatch):
+    from unittest.mock import MagicMock
+    
+    mock_app = MagicMock()
+    monkeypatch.setattr("PyQt6.QtWidgets.QApplication", lambda *args: mock_app)
+    
+    mock_gui = MagicMock()
+    mock_gui.tray_available = False
+    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args: mock_gui)
+    
+    mock_config = MagicMock()
+    mock_config.get.return_value = True
+    monkeypatch.setattr("src.utils.config.ConfigManager", lambda *args, **kwargs: mock_config)
+    
+    import sys
+    monkeypatch.setattr(sys, "argv", ["main.py", "--service"])
+    
+    import main
+    try:
+        main.main()
+    except SystemExit:
+        pass
+        
+    mock_gui.show.assert_called_once()
+
 

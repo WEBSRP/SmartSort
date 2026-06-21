@@ -5,6 +5,8 @@
   "enable_hash_verification": true,
   "enable_notifications": true,
   "enable_duplicate_detection": true,
+  "start_minimized": false,
+  "autostart": false,
   "categories": {
     "Videos": {
       "extensions": [".mkv", ".mp4", ".avi", ".mov"],

@@ -142,41 +142,60 @@ python3 main.py
 
 ---
 
-## Systemd Service
+## Background Service & System Tray
 
-To run SmartSort as an automatic background service on startup:
+SmartSort can run fully in the background as a Linux desktop service. Closing the dashboard window hides it to the system tray, while file monitoring continues unimpeded.
 
-### 1. Copy the Service Configuration
+### System Tray Menu Options
+The tray icon context menu provides quick controls:
+* **Open Dashboard / Rules / Rule Tester / Settings**: Displays the dashboard window directly at the corresponding tab.
+* **Pause / Resume Monitoring**: Temporarily disables or re-enables directory observation.
+* **Show Statistics**: Displays files processed, duplicate saves, and error metrics.
+* **Open Reports Folder**: Opens the reports directory.
+* **Restart / Exit**: Restarts or shuts down SmartSort.
+
+---
+
+## Daemon Mode
+
+To run SmartSort in a headless environment without a graphical environment:
 ```bash
-mkdir -p ~/.config/systemd/user/
-cp smartsort.service ~/.config/systemd/user/
+python3 main.py --daemon
 ```
+In daemon mode, the application runs entirely in the background, executing logging, notifications, and rule-engine organizing on incoming downloads without GUI memory overhead.
 
-### 2. Start and Enable the Service
-```bash
-systemctl --user daemon-reload
-systemctl --user enable smartsort.service
-systemctl --user start smartsort.service
-```
+---
 
-### 3. Check Service Logs
-```bash
-systemctl --user status smartsort.service
-```
+## Service & Startup Management
+
+SmartSort provides options to manage startup and execution directly from the GUI Settings panel:
+
+### 1. Auto Start
+Toggle the **Start SmartSort Automatically at Login** checkbox. When enabled, this creates a standard Linux autostart desktop entry at `~/.config/autostart/smartsort.desktop`, launching SmartSort in service mode on desktop login.
+
+### 2. Start Minimized
+Toggle the **Start SmartSort Minimized (to Tray)** checkbox. When enabled, launching the application initializes the system tray icon directly without opening the dashboard window.
+
+### 3. Systemd User Service Controls
+The Settings panel includes GUI buttons to manage the background service at the OS level:
+* **Install Service**: Generates a portable, user-specific service script at `~/.config/systemd/user/smartsort.service` and registers it.
+* **Start Service**: Starts the background daemon via systemd.
+* **Stop Service**: Stops the active systemd service.
+* **Restart Service**: Restarts the systemd daemon.
 
 ---
 
 ## Configuration
 
-Settings are stored in `config/config.json` and configurable in the GUI Settings panel:
-* **Downloads folder**: Path to directory monitored by the observer. SmartSort automatically resolves `~/Downloads` to the current user's Downloads folder.
-* **Notifications**: Toggle to push DBus alerts for successful transfers and errors.
-* **Duplicate detection**: Check SHA256 hashes of matching files. If identical, skips transfer and preserves the original.
-* **Conflict resolution**: Collision policy on filename overlaps:
-  - `rename` (Default): Appends increments (e.g. `_1`, `_2`) to destination file.
-  - `overwrite`: Overwrites the target file.
-  - `skip`: Skips copying.
-* **Large file threshold**: Size string (e.g., `2.5GB`, `500MB`) specifying size threshold for large file warnings.
+Settings are stored in `config/config.json` and are fully customizable in the GUI:
+* **Downloads folder**: Monitored path. Resolves `~/Downloads` dynamically to the current user's profile path.
+* **Start Minimized**: If enabled, starts hidden in the system tray.
+* **Autostart**: Automatically registers startup script.
+* **Theme**: Supports `System Theme`, `Dark Mode`, and `Light Mode`.
+* **Notifications**: Toggle DBus desktop notification alerts.
+* **Duplicate detection**: Performs SHA256 checksum checks to avoid duplicate writes.
+* **Conflict resolution**: Collision policy (`rename`, `overwrite`, `skip`).
+* **Large file threshold**: Warning size string (e.g. `2.5GB`, `500MB`).
 
 ---
 
@@ -196,6 +215,15 @@ SmartSort automatically resolves user home directories dynamically based on the 
 **Runtime Expansion:**
 * User **alice**: `~/Downloads` &rarr; `/home/alice/Downloads`
 * User **bob**: `~/Downloads` &rarr; `/home/bob/Downloads`
+
+---
+
+## Machine-Specific Paths
+
+Examples:
+* `/home/websrp/project/smartsort`
+
+Users installing SmartSort should update these paths for their environment.
 
 ---
 
@@ -239,6 +267,10 @@ System logs and development summaries are stored under `reports/`:
 * [size_threshold_fix_report.md](reports/size_threshold_fix_report.md): Large file settings size parsing bugfix report.
 * [path_portability_fix_report.md](reports/path_portability_fix_report.md): SmartSort portability improvement report describing home directory tilde expansion.
 * [readme_update_report.md](reports/readme_update_report.md): Report on the documentation updates and portability validation.
+* [handover_report.md](reports/handover_report.md): SmartSort portability & documentation update handover report.
+* [phase4_background_service_report.md](reports/phase4_background_service_report.md): Background service daemon and tray integration report.
+* [ui_modernization_report.md](reports/ui_modernization_report.md): GNOME Adwaita UI design modernization report.
+* [service_installation_report.md](reports/service_installation_report.md): User systemd automation installation report.
 
 ---
 

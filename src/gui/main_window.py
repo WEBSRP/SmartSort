@@ -7,9 +7,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                              QTextEdit, QTableWidget, QTableWidgetItem, 
                              QFileDialog, QSpinBox, QCheckBox, QMessageBox,
                              QFormLayout, QGroupBox, QLineEdit, QComboBox, 
-                             QDialog, QDialogButtonBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject
-from PyQt6.QtGui import QIcon
+                             QDialog, QDialogButtonBox, QSystemTrayIcon, QMenu, QFrame)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject, QEvent
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
+from datetime import datetime
 
 from src.utils.config import ConfigManager
 from src.utils.logger import SmartSortLogger
@@ -71,10 +72,617 @@ class SmartSortGUI(QMainWindow):
         self.threadpool = QThreadPool()
         
         self.stats = {"processed": 0, "duplicates": 0, "errors": 0}
+        self.really_exit = False
+        self.monitoring_active = True
+        self.last_activity_time = "Never"
         
         self.init_notification_system()
         self.init_ui()
+        
+        self.tray_available = False
+        try:
+            if QSystemTrayIcon.isSystemTrayAvailable():
+                try:
+                    self.setup_system_tray()
+                    self.tray_available = True
+                except Exception as e:
+                    self.logger.warning(f"System tray initialization failed: {e}")
+            else:
+                self.logger.warning("System tray unavailable. Running without tray support.")
+        except Exception as e:
+            self.logger.warning(f"Failed to check system tray availability: {e}")
+            
+        self.apply_theme()
+        
+        from PyQt6.QtCore import QTimer
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_dashboard_stats)
+        self.status_timer.start(3000)
+        
         self.start_monitor()
+
+    def setup_system_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Create a clean programmatically drawn icon
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#3584e4")) # Adwaita Blue
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)
+        painter.end()
+        self.tray_icon.setIcon(QIcon(pixmap))
+        self.tray_icon.setToolTip("SmartSort File Organizer")
+        
+        menu = QMenu()
+        
+        act_dashboard = menu.addAction("Open Dashboard")
+        act_dashboard.triggered.connect(lambda: self.show_tab(0))
+        
+        act_rules = menu.addAction("Open Rules")
+        act_rules.triggered.connect(lambda: self.show_tab(2))
+        
+        act_tester = menu.addAction("Open Rule Tester")
+        act_tester.triggered.connect(lambda: self.show_tab(4))
+        
+        act_settings = menu.addAction("Open Settings")
+        act_settings.triggered.connect(lambda: self.show_tab(3))
+        
+        menu.addSeparator()
+        
+        self.act_pause = menu.addAction("Pause Monitoring")
+        self.act_pause.triggered.connect(self.pause_monitoring)
+        
+        self.act_resume = menu.addAction("Resume Monitoring")
+        self.act_resume.triggered.connect(self.resume_monitoring)
+        self.act_resume.setEnabled(False)
+        
+        menu.addSeparator()
+        
+        act_stats = menu.addAction("Show Statistics")
+        act_stats.triggered.connect(self.show_statistics)
+        
+        act_reports = menu.addAction("Open Reports Folder")
+        act_reports.triggered.connect(self.open_reports_folder)
+        
+        act_restart = menu.addAction("Restart SmartSort")
+        act_restart.triggered.connect(self.restart_application)
+        
+        menu.addSeparator()
+        
+        act_exit = menu.addAction("Exit SmartSort")
+        act_exit.triggered.connect(self.exit_application)
+        
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
+        
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show_tab(0)
+
+    def show_tab(self, index):
+        self.tabs.setCurrentIndex(index)
+        self.showNormal()
+        self.activateWindow()
+
+    def pause_monitoring(self):
+        self.monitoring_active = False
+        self.lbl_monitoring_val.setText("Paused")
+        self.lbl_status.setText("Status: Monitoring Paused")
+        self.act_pause.setEnabled(False)
+        self.act_resume.setEnabled(True)
+        self.logger.info("Monitoring paused by user")
+
+    def resume_monitoring(self):
+        self.monitoring_active = True
+        self.lbl_monitoring_val.setText("Running")
+        self.lbl_status.setText("Status: Monitoring Downloads...")
+        self.act_pause.setEnabled(True)
+        self.act_resume.setEnabled(False)
+        self.logger.info("Monitoring resumed by user")
+
+    def show_statistics(self):
+        QMessageBox.information(
+            self, "Statistics", 
+            f"Files Processed: {self.stats['processed']}\n"
+            f"Duplicates Skipped: {self.stats['duplicates']}\n"
+            f"Errors Encountered: {self.stats['errors']}"
+        )
+
+    def open_reports_folder(self):
+        reports_dir = os.path.abspath("reports")
+        import subprocess
+        try:
+            subprocess.run(["xdg-open", reports_dir], check=False, timeout=2.0)
+        except Exception as e:
+            self.logger.error(f"Failed to open reports folder: {e}")
+
+    def restart_application(self):
+        self.really_exit = True
+        self.close()
+        import subprocess
+        subprocess.Popen([sys.executable, sys.argv[0]] + sys.argv[1:])
+        QApplication.quit()
+
+    def exit_application(self):
+        self.really_exit = True
+        self.close()
+        QApplication.quit()
+
+    def is_system_dark_mode(self) -> bool:
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, check=False, timeout=2.0
+            )
+            if "prefer-dark" in res.stdout:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def apply_theme(self):
+        theme_setting = self.config.get("theme", "system")
+        is_dark = False
+        if theme_setting == "dark":
+            is_dark = True
+        elif theme_setting == "light":
+            is_dark = False
+        else:
+            is_dark = self.is_system_dark_mode()
+            
+        if is_dark:
+            qss = """
+            QWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+            }
+            QMainWindow {
+                background-color: #1a1a1a;
+            }
+            QTabWidget::pane {
+                border: 1px solid #303030;
+                background-color: #1e1e1e;
+                border-radius: 8px;
+            }
+            QTabBar::tab {
+                background-color: #2b2b2b;
+                color: #b0b0b0;
+                padding: 8px 16px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                margin-right: 2px;
+                border: 1px solid #303030;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                font-weight: bold;
+                border-bottom: 1px solid #1e1e1e;
+            }
+            QFrame {
+                background-color: transparent;
+            }
+            QFrame.Card {
+                background-color: #262626;
+                border: 1px solid #333333;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QLabel {
+                background-color: transparent;
+                color: #e0e0e0;
+            }
+            QCheckBox, QRadioButton {
+                background-color: transparent;
+                color: #e0e0e0;
+            }
+            QGroupBox {
+                border: 1px solid #333333;
+                border-radius: 6px;
+                margin-top: 12px;
+                font-weight: bold;
+                color: #ffffff;
+                background-color: #242424;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+                background-color: #1e1e1e;
+            }
+            QScrollArea {
+                border: none;
+                background-color: #1e1e1e;
+            }
+            QScrollArea::viewport {
+                background-color: #1e1e1e;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: #1e1e1e;
+            }
+            QLineEdit, QTextEdit, QTableWidget, QListWidget, QComboBox, QSpinBox {
+                background-color: #181818;
+                border: 1px solid #333333;
+                border-radius: 6px;
+                padding: 6px;
+                color: #e0e0e0;
+            }
+            QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #3584e4;
+            }
+            QHeaderView::section {
+                background-color: #262626;
+                color: #e0e0e0;
+                padding: 4px;
+                border: 1px solid #303030;
+            }
+            QTableCornerButton::section {
+                background-color: #262626;
+                border: 1px solid #303030;
+            }
+            QComboBox::drop-down {
+                border: none;
+                background: transparent;
+            }
+            QPushButton {
+                background-color: #2a2a2a;
+                border: 1px solid #3a3a3a;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #e0e0e0;
+            }
+            QPushButton:hover {
+                background-color: #353535;
+                border: 1px solid #4a4a4a;
+            }
+            QPushButton:pressed {
+                background-color: #404040;
+            }
+            QPushButton#primary {
+                background-color: #3584e4;
+                color: white;
+                border: none;
+            }
+            QPushButton#primary:hover {
+                background-color: #1b6acb;
+            }
+            QPushButton#primary:pressed {
+                background-color: #1555a3;
+            }
+            code {
+                background-color: #262626;
+                color: #e0e0e0;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            """
+        else:
+            qss = """
+            QWidget {
+                background-color: #f6f5f4;
+                color: #2e3436;
+            }
+            QMainWindow {
+                background-color: #f6f5f4;
+            }
+            QTabWidget::pane {
+                border: 1px solid #e1dedb;
+                background-color: #ffffff;
+                border-radius: 8px;
+            }
+            QTabBar::tab {
+                background-color: #e1dedb;
+                color: #2e3436;
+                padding: 8px 16px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                margin-right: 2px;
+                border: 1px solid #e1dedb;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #ffffff;
+                color: #2e3436;
+                font-weight: bold;
+                border-bottom: 1px solid #ffffff;
+            }
+            QFrame {
+                background-color: transparent;
+            }
+            QFrame.Card {
+                background-color: #ffffff;
+                border: 1px solid #e1dedb;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QLabel {
+                background-color: transparent;
+                color: #2e3436;
+            }
+            QCheckBox, QRadioButton {
+                background-color: transparent;
+                color: #2e3436;
+            }
+            QPushButton {
+                background-color: #e1dedb;
+                border: 1px solid #c0bab4;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #2e3436;
+            }
+            QPushButton:hover {
+                background-color: #d5d1cc;
+            }
+            QPushButton:pressed {
+                background-color: #c0bab4;
+            }
+            QPushButton#primary {
+                background-color: #3584e4;
+                color: white;
+                border: none;
+            }
+            QPushButton#primary:hover {
+                background-color: #1b6acb;
+            }
+            QPushButton#primary:pressed {
+                background-color: #1555a3;
+            }
+            QLineEdit, QTextEdit, QTableWidget, QListWidget, QComboBox, QSpinBox {
+                background-color: #ffffff;
+                border: 1px solid #e1dedb;
+                border-radius: 6px;
+                padding: 4px;
+                color: #2e3436;
+            }
+            QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #3584e4;
+            }
+            QGroupBox {
+                border: 1px solid #e1dedb;
+                border-radius: 6px;
+                margin-top: 12px;
+                font-weight: bold;
+                color: #2e3436;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+                background-color: #f6f5f4;
+            }
+            QScrollArea {
+                border: none;
+                background-color: #f6f5f4;
+            }
+            QScrollArea::viewport {
+                background-color: #f6f5f4;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: #f6f5f4;
+            }
+            QHeaderView::section {
+                background-color: #e1dedb;
+                color: #2e3436;
+                padding: 4px;
+                border: 1px solid #c0bab4;
+            }
+            QTableCornerButton::section {
+                background-color: #e1dedb;
+                border: 1px solid #c0bab4;
+            }
+            code {
+                background-color: #f0ede9;
+                color: #2e3436;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            """
+        self.setStyleSheet(qss)
+
+    def create_card(self, title, val):
+        from PyQt6.QtWidgets import QFrame
+        card = QFrame()
+        card.setObjectName(title.replace(" ", "_").lower())
+        card.setProperty("class", "Card")
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        
+        layout = QVBoxLayout(card)
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #777777;")
+        lbl_val = QLabel(val)
+        lbl_val.setStyleSheet("font-size: 16px; font-weight: bold;")
+        
+        layout.addWidget(lbl_title)
+        layout.addWidget(lbl_val)
+        layout.addStretch()
+        return card, lbl_val
+
+    def update_dashboard_stats(self):
+        self.lbl_processed_val.setText(str(self.stats.get("processed", 0)))
+        self.lbl_duplicates_val.setText(str(self.stats.get("duplicates", 0)))
+        self.lbl_errors_val.setText(str(self.stats.get("errors", 0)))
+        
+        mon_status = "Running" if getattr(self, "monitoring_active", True) else "Paused"
+        self.lbl_monitoring_val.setText(mon_status)
+        if mon_status == "Running":
+            self.lbl_monitoring_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ec27e;")
+        else:
+            self.lbl_monitoring_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #e01b24;")
+            
+        svc_status = self.get_service_status()
+        self.lbl_service_val.setText(svc_status)
+        if svc_status == "Active":
+            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ec27e;")
+        elif svc_status == "Inactive":
+            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #f5c211;")
+        else:
+            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #e01b24;")
+            
+        active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
+        total_rules = len(self.organizer.rule_manager.rules)
+        self.lbl_rules_val.setText(f"{active_rules} / {total_rules}")
+        
+        self.lbl_activity_val.setText(getattr(self, "last_activity_time", "Never"))
+        
+        if hasattr(self, "lbl_service_control_status"):
+            self.lbl_service_control_status.setText(f"Service status: {svc_status}")
+
+    def get_service_status(self) -> str:
+        from pathlib import Path
+        service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
+        if not service_file.exists():
+            return "Not Installed"
+        import subprocess
+        try:
+            res = subprocess.run(
+                ["systemctl", "--user", "is-active", "smartsort.service"],
+                capture_output=True, text=True, check=False, timeout=2.0
+            )
+            status = res.stdout.strip()
+            if status == "active":
+                return "Active"
+            elif status == "inactive":
+                return "Inactive"
+            elif status == "failed":
+                return "Failed"
+            else:
+                return status.capitalize()
+        except Exception:
+            return "Error"
+
+    def install_service(self):
+        from pathlib import Path
+        try:
+            service_dir = Path.home() / ".config" / "systemd" / "user"
+            service_dir.mkdir(parents=True, exist_ok=True)
+            service_file = service_dir / "smartsort.service"
+            
+            main_path = Path(sys.argv[0]).resolve()
+            content = f"""[Unit]
+Description=SmartSort File Organizer Service
+After=network.target
+
+[Service]
+Type=simple
+# User-specific path - Change these paths when deploying to another machine if your installation folder is different
+# Target executable: {sys.executable}
+# Target script path: {main_path}
+ExecStart={sys.executable} {main_path} --daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+"""
+            service_file.write_text(content)
+            
+            import subprocess
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=2.0)
+            subprocess.run(["systemctl", "--user", "enable", "smartsort.service"], check=True, timeout=2.0)
+            
+            self.logger.info("Systemd user service installed and enabled successfully.")
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd user service installed and enabled successfully.")
+        except Exception as e:
+            self.logger.error(f"Failed to install systemd service: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to install systemd service: {str(e)}")
+
+    def start_service(self):
+        import subprocess
+        try:
+            subprocess.run(["systemctl", "--user", "start", "smartsort.service"], check=True, timeout=2.0)
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd service started successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start service: {str(e)}")
+            
+    def stop_service(self):
+        import subprocess
+        try:
+            subprocess.run(["systemctl", "--user", "stop", "smartsort.service"], check=True, timeout=2.0)
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd service stopped successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to stop service: {str(e)}")
+            
+    def restart_service(self):
+        import subprocess
+        try:
+            subprocess.run(["systemctl", "--user", "restart", "smartsort.service"], check=True, timeout=2.0)
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd service restarted successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to restart service: {str(e)}")
+
+    def update_autostart_setting(self, enabled: bool):
+        from pathlib import Path
+        autostart_dir = Path.home() / ".config" / "autostart"
+        autostart_file = autostart_dir / "smartsort.desktop"
+        
+        if enabled:
+            try:
+                autostart_dir.mkdir(parents=True, exist_ok=True)
+                main_path = Path(sys.argv[0]).resolve()
+                content = f"""[Desktop Entry]
+# User-specific path - Change these paths when deploying to another machine if your installation folder is different
+# Target executable: {sys.executable}
+# Target script path: {main_path}
+Type=Application
+Exec={sys.executable} {main_path} --service
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=SmartSort
+Comment=SmartSort File Organizer Background Service
+"""
+                autostart_file.write_text(content)
+                self.logger.info(f"Autostart entry created at {autostart_file}")
+            except Exception as e:
+                self.logger.error(f"Failed to create autostart entry: {e}")
+        else:
+            if autostart_file.exists():
+                try:
+                    autostart_file.unlink()
+                    self.logger.info(f"Autostart entry removed from {autostart_file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to remove autostart entry: {e}")
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized() and getattr(self, "tray_available", False):
+                self.hide()
+                event.accept()
+                return
+        super().changeEvent(event)
+
+    def closeEvent(self, event):
+        if not getattr(self, "tray_available", False):
+            self.really_exit = True
+            
+        if not getattr(self, "really_exit", False):
+            event.ignore()
+            self.hide()
+            if getattr(self, "notifications_enabled", False):
+                try:
+                    import notify2
+                    n = notify2.Notification("SmartSort", "SmartSort is still running in the system tray.")
+                    n.show()
+                except Exception:
+                    pass
+        else:
+            if hasattr(self, "monitor_thread"):
+                try:
+                    self.monitor_thread.stop()
+                except Exception:
+                    pass
+            event.accept()
 
     def init_notification_system(self):
         self.notifications_enabled = False
@@ -108,19 +716,42 @@ class SmartSortGUI(QMainWindow):
         self.setup_tester()
 
     def setup_dashboard(self):
-        layout = QVBoxLayout()
-        self.lbl_status = QLabel("Status: Monitoring Downloads...")
-        self.lbl_stats = QLabel("Files Processed: 0 | Duplicates: 0 | Errors: 0")
+        from PyQt6.QtWidgets import QFrame, QGridLayout
+        main_layout = QVBoxLayout()
         
+        # Grid of cards
+        grid_layout = QGridLayout()
+        
+        self.card_processed, self.lbl_processed_val = self.create_card("Files Processed", "0")
+        self.card_duplicates, self.lbl_duplicates_val = self.create_card("Duplicates Skipped", "0")
+        self.card_errors, self.lbl_errors_val = self.create_card("Errors Encountered", "0")
+        self.card_monitoring, self.lbl_monitoring_val = self.create_card("Monitoring Status", "Running")
+        self.card_service, self.lbl_service_val = self.create_card("Service Status", "Checking...")
+        self.card_rules, self.lbl_rules_val = self.create_card("Rules Active", "0")
+        self.card_activity, self.lbl_activity_val = self.create_card("Last Activity", "Never")
+        
+        grid_layout.addWidget(self.card_processed, 0, 0)
+        grid_layout.addWidget(self.card_duplicates, 0, 1)
+        grid_layout.addWidget(self.card_errors, 0, 2)
+        grid_layout.addWidget(self.card_monitoring, 0, 3)
+        grid_layout.addWidget(self.card_service, 1, 0)
+        grid_layout.addWidget(self.card_rules, 1, 1)
+        grid_layout.addWidget(self.card_activity, 1, 2, 1, 2) # spanning 2 columns
+        
+        main_layout.addLayout(grid_layout)
+        
+        # Status label
+        self.lbl_status = QLabel("Status: Monitoring Downloads...")
+        self.lbl_status.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        main_layout.addWidget(self.lbl_status)
+        
+        # Log display
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
+        main_layout.addWidget(QLabel("Recent Activity:"))
+        main_layout.addWidget(self.log_display)
         
-        layout.addWidget(self.lbl_status)
-        layout.addWidget(self.lbl_stats)
-        layout.addWidget(QLabel("Recent Activity:"))
-        layout.addWidget(self.log_display)
-        
-        self.tab_dashboard.setLayout(layout)
+        self.tab_dashboard.setLayout(main_layout)
 
     def setup_logs(self):
         layout = QVBoxLayout()
@@ -195,46 +826,133 @@ class SmartSortGUI(QMainWindow):
             return f"{num_bytes}B"
 
     def setup_settings(self):
-        layout = QVBoxLayout()
+        from PyQt6.QtWidgets import QGroupBox, QFormLayout, QComboBox, QScrollArea
         
-        # Downloads Path
+        # Use scroll area to ensure all settings fit neatly
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        
+        container = QWidget()
+        scroll.setWidget(container)
+        
+        layout = QVBoxLayout(container)
+        
+        # 1. General Group
+        group_general = QGroupBox("General Settings")
+        gen_layout = QVBoxLayout(group_general)
+        
+        self.chk_autostart = QCheckBox("Start SmartSort Automatically at Login")
+        self.chk_autostart.setChecked(self.config.get("autostart", False))
+        
+        self.chk_start_minimized = QCheckBox("Start SmartSort Minimized (to Tray)")
+        self.chk_start_minimized.setChecked(self.config.get("start_minimized", False))
+        
+        h_theme = QHBoxLayout()
+        h_theme.addWidget(QLabel("Application Theme:"))
+        self.cmb_theme = QComboBox()
+        self.cmb_theme.addItems(["System Theme", "Dark Mode", "Light Mode"])
+        
+        theme_val = self.config.get("theme", "system")
+        if theme_val == "dark":
+            self.cmb_theme.setCurrentIndex(1)
+        elif theme_val == "light":
+            self.cmb_theme.setCurrentIndex(2)
+        else:
+            self.cmb_theme.setCurrentIndex(0)
+            
+        h_theme.addWidget(self.cmb_theme)
+        h_theme.addStretch()
+        
+        gen_layout.addWidget(self.chk_autostart)
+        gen_layout.addWidget(self.chk_start_minimized)
+        gen_layout.addLayout(h_theme)
+        layout.addWidget(group_general)
+        
+        # 2. Monitoring Group
+        group_monitoring = QGroupBox("Monitoring Settings")
+        mon_layout = QFormLayout(group_monitoring)
+        
         h_down = QHBoxLayout()
         self.txt_downloads = QLabel(self.config.get("downloads_folder"))
+        self.txt_downloads.setWordWrap(True)
         btn_browse_down = QPushButton("Browse")
         btn_browse_down.clicked.connect(self.browse_downloads)
-        h_down.addWidget(QLabel("Downloads Folder:"))
-        h_down.addWidget(self.txt_downloads)
+        h_down.addWidget(self.txt_downloads, 1)
         h_down.addWidget(btn_browse_down)
-        layout.addLayout(h_down)
         
-        # Threshold
-        h_thresh = QHBoxLayout()
+        mon_layout.addRow("Downloads Folder:", h_down)
+        
         self.txt_thresh = QLineEdit()
         self.txt_thresh.setPlaceholderText("Examples: 500MB, 1.5GB, 2GB")
-        
         current_bytes = self.config.get("large_file_threshold_gb")
         if isinstance(current_bytes, (int, float)) and current_bytes < 10000:
             current_bytes = int(current_bytes * (1024**3))
         self.txt_thresh.setText(self.bytes_to_human_string(current_bytes))
         
-        h_thresh.addWidget(QLabel("Large File Threshold:"))
-        h_thresh.addWidget(self.txt_thresh)
-        layout.addLayout(h_thresh)
+        mon_layout.addRow("Large File Threshold:", self.txt_thresh)
+        layout.addWidget(group_monitoring)
         
-        # Toggles
-        self.chk_notif = QCheckBox("Enable Notifications")
+        # 3. Notifications Group
+        group_notif = QGroupBox("Notifications")
+        notif_layout = QVBoxLayout(group_notif)
+        
+        self.chk_notif = QCheckBox("Enable Desktop Notifications")
         self.chk_notif.setChecked(self.config.get("enable_notifications"))
-        layout.addWidget(self.chk_notif)
+        notif_layout.addWidget(self.chk_notif)
+        layout.addWidget(group_notif)
         
-        self.chk_dup = QCheckBox("Enable Duplicate Detection")
+        # 4. Service Group
+        group_service = QGroupBox("Background Service Controls (Systemd)")
+        svc_layout = QVBoxLayout(group_service)
+        
+        self.lbl_service_control_status = QLabel("Service status: Checking...")
+        self.lbl_service_control_status.setStyleSheet("font-weight: bold;")
+        svc_layout.addWidget(self.lbl_service_control_status)
+        
+        h_svc_btns = QHBoxLayout()
+        btn_inst_svc = QPushButton("Install Service")
+        btn_inst_svc.clicked.connect(self.install_service)
+        btn_start_svc = QPushButton("Start Service")
+        btn_start_svc.clicked.connect(self.start_service)
+        btn_stop_svc = QPushButton("Stop Service")
+        btn_stop_svc.clicked.connect(self.stop_service)
+        btn_restart_svc = QPushButton("Restart Service")
+        btn_restart_svc.clicked.connect(self.restart_service)
+        
+        h_svc_btns.addWidget(btn_inst_svc)
+        h_svc_btns.addWidget(btn_start_svc)
+        h_svc_btns.addWidget(btn_stop_svc)
+        h_svc_btns.addWidget(btn_restart_svc)
+        svc_layout.addLayout(h_svc_btns)
+        
+        layout.addWidget(group_service)
+        
+        # 5. Advanced Group
+        group_adv = QGroupBox("Advanced Settings")
+        adv_layout = QFormLayout(group_adv)
+        
+        self.chk_dup = QCheckBox("Enable Duplicate Detection (SHA256 Hash check)")
         self.chk_dup.setChecked(self.config.get("enable_duplicate_detection"))
-        layout.addWidget(self.chk_dup)
+        adv_layout.addRow(self.chk_dup)
         
-        btn_save = QPushButton("Save Settings")
+        self.cmb_conflict = QComboBox()
+        self.cmb_conflict.addItems(["rename", "overwrite", "skip"])
+        self.cmb_conflict.setCurrentText(self.config.get("conflict_resolution", "rename"))
+        adv_layout.addRow("Collision Policy:", self.cmb_conflict)
+        
+        layout.addWidget(group_adv)
+        
+        # Save Button
+        btn_save = QPushButton("Save All Settings")
+        btn_save.setObjectName("primary")
         btn_save.clicked.connect(self.save_settings)
         layout.addWidget(btn_save)
         
-        self.tab_settings.setLayout(layout)
+        # Wrap container in scroll area
+        main_settings_layout = QVBoxLayout()
+        main_settings_layout.addWidget(scroll)
+        self.tab_settings.setLayout(main_settings_layout)
 
     def browse_downloads(self):
         path = QFileDialog.getExistingDirectory(self, "Select Downloads Folder")
@@ -259,7 +977,24 @@ class SmartSortGUI(QMainWindow):
             self.config.set("large_file_threshold_gb", bytes_val)
             self.config.set("enable_notifications", self.chk_notif.isChecked())
             self.config.set("enable_duplicate_detection", self.chk_dup.isChecked())
-            QMessageBox.information(self, "Success", "Settings saved successfully!")
+            self.config.set("conflict_resolution", self.cmb_conflict.currentText())
+            self.config.set("start_minimized", self.chk_start_minimized.isChecked())
+            
+            prev_autostart = self.config.get("autostart", False)
+            new_autostart = self.chk_autostart.isChecked()
+            self.config.set("autostart", new_autostart)
+            
+            if prev_autostart != new_autostart:
+                self.update_autostart_setting(new_autostart)
+                
+            theme_map = {"System Theme": "system", "Dark Mode": "dark", "Light Mode": "light"}
+            theme_val = theme_map.get(self.cmb_theme.currentText(), "system")
+            self.config.set("theme", theme_val)
+            
+            # Apply theme immediately
+            self.apply_theme()
+            
+            QMessageBox.information(self, "Success", "All settings saved successfully!")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
 
@@ -273,12 +1008,23 @@ class SmartSortGUI(QMainWindow):
             name_item = QTableWidgetItem(r.name)
             name_item.setData(Qt.ItemDataRole.UserRole, r.id)
             
+            priority_badge = f"P{r.priority}"
+            priority_item = QTableWidgetItem(priority_badge)
+            priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            enabled_indicator = "🟢" if r.enabled else "🔴"
+            enabled_item = QTableWidgetItem(enabled_indicator)
+            enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            dest_item = QTableWidgetItem(r.destination)
+            
             self.table_rules.setItem(row, 0, name_item)
-            self.table_rules.setItem(row, 1, QTableWidgetItem(str(r.priority)))
-            self.table_rules.setItem(row, 2, QTableWidgetItem("Yes" if r.enabled else "No"))
-            self.table_rules.setItem(row, 3, QTableWidgetItem(r.destination))
+            self.table_rules.setItem(row, 1, priority_item)
+            self.table_rules.setItem(row, 2, enabled_item)
+            self.table_rules.setItem(row, 3, dest_item)
             
         self.table_rules.resizeColumnsToContents()
+        self.table_rules.horizontalHeader().setStretchLastSection(True)
 
     def get_selected_rule_id(self) -> str:
         selected_ranges = self.table_rules.selectedRanges()
@@ -471,13 +1217,13 @@ class SmartSortGUI(QMainWindow):
         rule, dest = engine.evaluate_file(eval_path, file_size)
         
         if rule:
-            self.lbl_test_match.setText(rule.name)
-            self.lbl_test_priority.setText(str(rule.priority))
+            self.lbl_test_match.setText(f"<span style='color: #2ec27e; font-weight: bold;'>{rule.name}</span>")
+            self.lbl_test_priority.setText(f"<span style='background-color: #3584e4; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>P{rule.priority}</span>")
         else:
-            self.lbl_test_match.setText("None (Fallback Rule)")
-            self.lbl_test_priority.setText("N/A")
+            self.lbl_test_match.setText("<span style='color: #f5c211; font-weight: bold;'>None (Fallback Rule)</span>")
+            self.lbl_test_priority.setText("<span style='color: #888888;'>N/A</span>")
             
-        self.lbl_test_dest.setText(dest)
+        self.lbl_test_dest.setText(f"<code>{dest}</code>")
 
     def refresh_logs(self):
         log_dir = "logs"
@@ -534,6 +1280,11 @@ class SmartSortGUI(QMainWindow):
         self.monitor_thread.start()
 
     def handle_new_file(self, file_path):
+        if not getattr(self, "monitoring_active", True):
+            self.logger.info(f"Monitoring is paused. Ignoring file: {file_path}")
+            if hasattr(self, 'monitor_thread'):
+                self.monitor_thread.get_handler().mark_as_unprocessed(file_path)
+            return
         # This is called from the monitor thread (via signal)
         self.log_display.append(f"Detected: {os.path.basename(file_path)}")
         self.start_file_worker(file_path)
@@ -546,9 +1297,8 @@ class SmartSortGUI(QMainWindow):
 
     def update_stats(self, category):
         self.stats[category] += 1
-        self.lbl_stats.setText(f"Files Processed: {self.stats['processed']} | "
-                               f"Duplicates: {self.stats['duplicates']} | "
-                               f"Errors: {self.stats['errors']}")
+        self.last_activity_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.update_dashboard_stats()
 
     def on_worker_finished(self, file_path, result, info):
         filename = os.path.basename(file_path)

@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/websrp/project/smartsort/main.py --service
+# User-specific path - Change these paths when deploying to another machine if your installation folder is different
+# Example: Change %h/project/smartsort to your actual project directory (e.g., /home/username/smartsort)
+ExecStart=%h/project/smartsort/smartsort/bin/python %h/project/smartsort/main.py --daemon
 Restart=on-failure
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/websrp/.Xauthority
 
 [Install]
 WantedBy=default.target

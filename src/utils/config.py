@@ -24,7 +24,9 @@ class ConfigManager:
             "enable_duplicate_detection": bool,
             "conflict_resolution": str,
             "categories": dict,
-            "rules": list
+            "rules": list,
+            "start_minimized": bool,
+            "autostart": bool
         }
         for key, expected_type in required_keys.items():
             if key in config:

@@ -1,10 +1,12 @@
 {
     "downloads_folder": "/home/websrp/Downloads",
-    "destination_base": "/home/websrp",
+    "destination_base": "~",
     "large_file_threshold_gb": 1073741824,
     "enable_hash_verification": true,
     "enable_notifications": true,
     "enable_duplicate_detection": true,
+    "start_minimized": true,
+    "autostart": true,
     "rules": [
         {
             "id": "img_low",
@@ -110,10 +112,37 @@
             "destination": "Videos/Big_Videos"
         },
         {
+            "id": "legacy_college",
+            "name": "College",
+            "enabled": true,
+            "priority": 5,
+            "conditions": [
+                {
+                    "type": "extension",
+                    "value": [
+                        ".pptx",
+                        ".pptm"
+                    ]
+                },
+                {
+                    "type": "filename",
+                    "value": [
+                        "assignment",
+                        "lecture",
+                        "lab",
+                        "semester",
+                        "notes",
+                        "ppt"
+                    ]
+                }
+            ],
+            "destination": "Documents/College"
+        },
+        {
             "id": "legacy_videos_small",
             "name": "Videos",
             "enabled": true,
-            "priority": 5,
+            "priority": 6,
             "conditions": [
                 {
                     "type": "extension",
@@ -131,7 +160,7 @@
             "id": "legacy_documents",
             "name": "Documents",
             "enabled": true,
-            "priority": 6,
+            "priority": 7,
             "conditions": [
                 {
                     "type": "extension",
@@ -149,7 +178,7 @@
             "id": "legacy_archives",
             "name": "Archives",
             "enabled": true,
-            "priority": 7,
+            "priority": 8,
             "conditions": [
                 {
                     "type": "extension",
@@ -167,7 +196,7 @@
             "id": "legacy_disk images",
             "name": "Disk Images",
             "enabled": true,
-            "priority": 8,
+            "priority": 9,
             "conditions": [
                 {
                     "type": "extension",
@@ -182,7 +211,7 @@
             "id": "legacy_cybersecurity",
             "name": "Cybersecurity",
             "enabled": true,
-            "priority": 9,
+            "priority": 10,
             "conditions": [
                 {
                     "type": "filename",
@@ -199,26 +228,8 @@
                 }
             ],
             "destination": "Cybersecurity"
-        },
-        {
-            "id": "legacy_college",
-            "name": "College",
-            "enabled": true,
-            "priority": 10,
-            "conditions": [
-                {
-                    "type": "filename",
-                    "value": [
-                        "assignment",
-                        "lecture",
-                        "lab",
-                        "semester",
-                        "notes",
-                        "ppt"
-                    ]
-                }
-            ],
-            "destination": "Documents/College"
         }
-    ]
+    ],
+    "conflict_resolution": "rename",
+    "theme": "dark"
 }
