@@ -65,6 +65,25 @@ class SmartSortGUI(QMainWindow):
         self.setWindowTitle("SmartSort - File Organizer")
         self.resize(800, 600)
         
+        # Set Window Icon using absolute path resolution based on project root
+        from PyQt6.QtGui import QIcon
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(current_file_dir))
+        
+        # Add assets/icons to theme paths just in case it is not registered yet
+        icon_dir = os.path.join(project_root, "assets", "icons")
+        current_paths = QIcon.themeSearchPaths()
+        if icon_dir not in current_paths:
+            QIcon.setThemeSearchPaths(current_paths + [icon_dir])
+            
+        theme_icon = QIcon.fromTheme("logo")
+        if not theme_icon.isNull():
+            self.setWindowIcon(theme_icon)
+        else:
+            icon_path = os.path.join(icon_dir, "logo.png")
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        
         # Initialize Core
         self.config = ConfigManager(config_path="config/config.json", default_path="config/default_config.json")
         self.logger = SmartSortLogger()
@@ -81,16 +100,10 @@ class SmartSortGUI(QMainWindow):
         
         self.tray_available = False
         try:
-            if QSystemTrayIcon.isSystemTrayAvailable():
-                try:
-                    self.setup_system_tray()
-                    self.tray_available = True
-                except Exception as e:
-                    self.logger.warning(f"System tray initialization failed: {e}")
-            else:
-                self.logger.warning("System tray unavailable. Running without tray support.")
+            self.setup_system_tray()
+            self.tray_available = True
         except Exception as e:
-            self.logger.warning(f"Failed to check system tray availability: {e}")
+            self.logger.warning(f"System tray initialization failed: {e}")
             
         self.apply_theme()
         
@@ -100,21 +113,16 @@ class SmartSortGUI(QMainWindow):
         self.status_timer.start(3000)
         
         self.start_monitor()
+        
+        if self.tray_available:
+            QTimer.singleShot(2000, self.finish_startup)
 
     def setup_system_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
         
-        # Create a clean programmatically drawn icon
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor("#3584e4")) # Adwaita Blue
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(2, 2, 12, 12)
-        painter.end()
-        self.tray_icon.setIcon(QIcon(pixmap))
-        self.tray_icon.setToolTip("SmartSort File Organizer")
+        from src.gui.tray_manager import TrayStateManager
+        self.tray_manager = TrayStateManager(self.tray_icon, self)
+        self.tray_manager.set_startup()
         
         menu = QMenu()
         
@@ -147,6 +155,10 @@ class SmartSortGUI(QMainWindow):
         act_reports = menu.addAction("Open Reports Folder")
         act_reports.triggered.connect(self.open_reports_folder)
         
+        act_about = menu.addAction("About SmartSort")
+        if hasattr(self, "show_about_dialog"):
+            act_about.triggered.connect(self.show_about_dialog)
+        
         act_restart = menu.addAction("Restart SmartSort")
         act_restart.triggered.connect(self.restart_application)
         
@@ -160,9 +172,35 @@ class SmartSortGUI(QMainWindow):
         
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
+    def finish_startup(self):
+        if self.tray_available:
+            active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
+            if getattr(self, "monitoring_active", True):
+                self.tray_manager.set_monitoring(self.stats.get("processed", 0), active_rules)
+            else:
+                self.tray_manager.set_paused(self.stats.get("processed", 0), active_rules)
+
     def on_tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.show_tab(0)
+
+    def show_about_dialog(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtCore import Qt
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About SmartSort")
+        msg.setText("<b>SmartSort File Organizer</b><br>Version 2.0.0<br><br>An intelligent, rule-based daemon and GUI to organize your downloads folder automatically.")
+        
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(current_file_dir))
+        logo_path = os.path.join(project_root, "assets", "icons", "logo.png")
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            scaled = pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            msg.setIconPixmap(scaled)
+            
+        msg.exec()
 
     def show_tab(self, index):
         self.tabs.setCurrentIndex(index)
@@ -176,6 +214,9 @@ class SmartSortGUI(QMainWindow):
         self.act_pause.setEnabled(False)
         self.act_resume.setEnabled(True)
         self.logger.info("Monitoring paused by user")
+        if self.tray_available:
+            active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
+            self.tray_manager.set_paused(self.stats.get("processed", 0), active_rules)
 
     def resume_monitoring(self):
         self.monitoring_active = True
@@ -184,6 +225,9 @@ class SmartSortGUI(QMainWindow):
         self.act_pause.setEnabled(True)
         self.act_resume.setEnabled(False)
         self.logger.info("Monitoring resumed by user")
+        if self.tray_available:
+            active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
+            self.tray_manager.set_monitoring(self.stats.get("processed", 0), active_rules)
 
     def show_statistics(self):
         QMessageBox.information(
@@ -519,9 +563,9 @@ class SmartSortGUI(QMainWindow):
             
         svc_status = self.get_service_status()
         self.lbl_service_val.setText(svc_status)
-        if svc_status == "Active":
+        if svc_status == "Running":
             self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ec27e;")
-        elif svc_status == "Inactive":
+        elif svc_status == "Stopped":
             self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #f5c211;")
         else:
             self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #e01b24;")
@@ -534,29 +578,47 @@ class SmartSortGUI(QMainWindow):
         
         if hasattr(self, "lbl_service_control_status"):
             self.lbl_service_control_status.setText(f"Service status: {svc_status}")
+            
+        from src.gui.tray_manager import TrayState
+        if self.tray_available and self.tray_manager.current_state in [TrayState.IDLE, TrayState.PAUSED, TrayState.ERROR]:
+            if getattr(self, "monitoring_active", True):
+                self.tray_manager.set_monitoring(self.stats.get("processed", 0), active_rules)
+            else:
+                self.tray_manager.set_paused(self.stats.get("processed", 0), active_rules)
 
     def get_service_status(self) -> str:
         from pathlib import Path
-        service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
-        if not service_file.exists():
-            return "Not Installed"
         import subprocess
+        service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
         try:
-            res = subprocess.run(
+            # Query if enabled
+            res_enabled = subprocess.run(
+                ["systemctl", "--user", "is-enabled", "smartsort.service"],
+                capture_output=True, text=True, check=False, timeout=2.0
+            )
+            enabled_out = res_enabled.stdout.strip()
+            
+            # Check if not installed
+            if not service_file.exists() and (enabled_out == "not-found" or "No such file" in res_enabled.stderr or res_enabled.returncode == 4):
+                return "Not Installed"
+                
+            # Check if active/running
+            res_active = subprocess.run(
                 ["systemctl", "--user", "is-active", "smartsort.service"],
                 capture_output=True, text=True, check=False, timeout=2.0
             )
-            status = res.stdout.strip()
-            if status == "active":
-                return "Active"
-            elif status == "inactive":
-                return "Inactive"
-            elif status == "failed":
-                return "Failed"
+            active_out = res_active.stdout.strip()
+            
+            if active_out == "active":
+                return "Running"
+            elif enabled_out == "enabled":
+                return "Stopped"
             else:
-                return status.capitalize()
+                return "Disabled"
         except Exception:
-            return "Error"
+            if not service_file.exists():
+                return "Not Installed"
+            return "Stopped"
 
     def install_service(self):
         from pathlib import Path
@@ -572,9 +634,7 @@ After=network.target
 
 [Service]
 Type=simple
-# User-specific path - Change these paths when deploying to another machine if your installation folder is different
-# Target executable: {sys.executable}
-# Target script path: {main_path}
+WorkingDirectory={main_path.parent}
 ExecStart={sys.executable} {main_path} --daemon
 Restart=on-failure
 
@@ -631,16 +691,15 @@ WantedBy=default.target
                 autostart_dir.mkdir(parents=True, exist_ok=True)
                 main_path = Path(sys.argv[0]).resolve()
                 content = f"""[Desktop Entry]
-# User-specific path - Change these paths when deploying to another machine if your installation folder is different
-# Target executable: {sys.executable}
-# Target script path: {main_path}
 Type=Application
 Exec={sys.executable} {main_path} --service
+Path={main_path.parent}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 Name=SmartSort
 Comment=SmartSort File Organizer Background Service
+Icon={main_path.parent}/assets/icons/logo.png
 """
                 autostart_file.write_text(content)
                 self.logger.info(f"Autostart entry created at {autostart_file}")
@@ -806,10 +865,18 @@ Comment=SmartSort File Organizer Background Service
         self.tab_rules.setLayout(layout)
         self.refresh_rules_table()
 
-    def bytes_to_human_string(self, num_bytes: int) -> str:
+    def bytes_to_human_string(self, num_bytes) -> str:
         if num_bytes is None:
             return "2.5GB"
-        num_bytes = int(num_bytes)
+        try:
+            if isinstance(num_bytes, str):
+                from src.rules.conditions import parse_size_to_bytes
+                num_bytes = parse_size_to_bytes(num_bytes)
+            else:
+                num_bytes = int(num_bytes)
+        except Exception:
+            return "2.5GB"
+            
         if num_bytes < 10000:
             num_bytes = int(num_bytes * (1024**3))
             
@@ -843,17 +910,17 @@ Comment=SmartSort File Organizer Background Service
         gen_layout = QVBoxLayout(group_general)
         
         self.chk_autostart = QCheckBox("Start SmartSort Automatically at Login")
-        self.chk_autostart.setChecked(self.config.get("autostart", False))
+        self.chk_autostart.setChecked(bool(self.config.get("autostart", False)))
         
         self.chk_start_minimized = QCheckBox("Start SmartSort Minimized (to Tray)")
-        self.chk_start_minimized.setChecked(self.config.get("start_minimized", False))
+        self.chk_start_minimized.setChecked(bool(self.config.get("start_minimized", False)))
         
         h_theme = QHBoxLayout()
         h_theme.addWidget(QLabel("Application Theme:"))
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItems(["System Theme", "Dark Mode", "Light Mode"])
         
-        theme_val = self.config.get("theme", "system")
+        theme_val = str(self.config.get("theme", "system")).lower()
         if theme_val == "dark":
             self.cmb_theme.setCurrentIndex(1)
         elif theme_val == "light":
@@ -874,7 +941,7 @@ Comment=SmartSort File Organizer Background Service
         mon_layout = QFormLayout(group_monitoring)
         
         h_down = QHBoxLayout()
-        self.txt_downloads = QLabel(self.config.get("downloads_folder"))
+        self.txt_downloads = QLabel(str(self.config.get("downloads_folder", "~/Downloads")))
         self.txt_downloads.setWordWrap(True)
         btn_browse_down = QPushButton("Browse")
         btn_browse_down.clicked.connect(self.browse_downloads)
@@ -885,7 +952,7 @@ Comment=SmartSort File Organizer Background Service
         
         self.txt_thresh = QLineEdit()
         self.txt_thresh.setPlaceholderText("Examples: 500MB, 1.5GB, 2GB")
-        current_bytes = self.config.get("large_file_threshold_gb")
+        current_bytes = self.config.get("large_file_threshold_gb", 2684354560)
         if isinstance(current_bytes, (int, float)) and current_bytes < 10000:
             current_bytes = int(current_bytes * (1024**3))
         self.txt_thresh.setText(self.bytes_to_human_string(current_bytes))
@@ -898,7 +965,7 @@ Comment=SmartSort File Organizer Background Service
         notif_layout = QVBoxLayout(group_notif)
         
         self.chk_notif = QCheckBox("Enable Desktop Notifications")
-        self.chk_notif.setChecked(self.config.get("enable_notifications"))
+        self.chk_notif.setChecked(bool(self.config.get("enable_notifications", True)))
         notif_layout.addWidget(self.chk_notif)
         layout.addWidget(group_notif)
         
@@ -933,12 +1000,15 @@ Comment=SmartSort File Organizer Background Service
         adv_layout = QFormLayout(group_adv)
         
         self.chk_dup = QCheckBox("Enable Duplicate Detection (SHA256 Hash check)")
-        self.chk_dup.setChecked(self.config.get("enable_duplicate_detection"))
+        self.chk_dup.setChecked(bool(self.config.get("enable_duplicate_detection", True)))
         adv_layout.addRow(self.chk_dup)
         
         self.cmb_conflict = QComboBox()
         self.cmb_conflict.addItems(["rename", "overwrite", "skip"])
-        self.cmb_conflict.setCurrentText(self.config.get("conflict_resolution", "rename"))
+        conflict_val = self.config.get("conflict_resolution", "rename")
+        if conflict_val not in ["rename", "overwrite", "skip"]:
+            conflict_val = "rename"
+        self.cmb_conflict.setCurrentText(str(conflict_val))
         adv_layout.addRow("Collision Policy:", self.cmb_conflict)
         
         layout.addWidget(group_adv)
@@ -1287,6 +1357,12 @@ Comment=SmartSort File Organizer Background Service
             return
         # This is called from the monitor thread (via signal)
         self.log_display.append(f"Detected: {os.path.basename(file_path)}")
+        if self.tray_available:
+            try:
+                size_bytes = os.path.getsize(file_path)
+            except Exception:
+                size_bytes = 0
+            self.tray_manager.set_processing(os.path.basename(file_path), size_bytes)
         self.start_file_worker(file_path)
 
     def start_file_worker(self, file_path, user_approved=False):
@@ -1302,6 +1378,7 @@ Comment=SmartSort File Organizer Background Service
 
     def on_worker_finished(self, file_path, result, info):
         filename = os.path.basename(file_path)
+        active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
         if result == "AWAIT_APPROVAL":
             self.ask_approval(file_path, info)
         elif result == "SUCCESS":
@@ -1310,12 +1387,18 @@ Comment=SmartSort File Organizer Background Service
             if self.config.get("enable_notifications"):
                 self.show_notification("File Organized", f"{filename} moved to {info}")
             self.refresh_logs()
+            if self.tray_available:
+                self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "DUPLICATE":
             self.update_stats("duplicates")
             self.log_display.append(f"Duplicate found for {filename} at: {info}")
             QMessageBox.information(self, "Duplicate Detected", f"A matching file already exists:\n{info}")
+            if self.tray_available:
+                self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "SKIPPED":
             self.log_display.append(f"Skipped: {filename} ({info})")
+            if self.tray_available:
+                self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "ERROR":
             self.update_stats("errors")
             self.log_display.append(f"Error processing {filename}: {info}")
@@ -1323,6 +1406,8 @@ Comment=SmartSort File Organizer Background Service
                 self.show_notification("SmartSort Error", f"Failed to organize {filename}: {info}")
             if hasattr(self, 'monitor_thread'):
                 self.monitor_thread.get_handler().mark_as_unprocessed(file_path)
+            if self.tray_available:
+                self.tray_manager.set_error(info)
 
     def on_worker_error(self, file_path, error_msg):
         self.log_display.append(f"Critical error processing {os.path.basename(file_path)}: {error_msg}")
@@ -1330,6 +1415,8 @@ Comment=SmartSort File Organizer Background Service
             self.show_notification("SmartSort Critical Error", f"Error organizing {os.path.basename(file_path)}: {error_msg}")
         if hasattr(self, 'monitor_thread'):
             self.monitor_thread.get_handler().mark_as_unprocessed(file_path)
+        if self.tray_available:
+            self.tray_manager.set_error(error_msg)
 
     def ask_approval(self, file_path, dest_path):
         filename = os.path.basename(file_path)

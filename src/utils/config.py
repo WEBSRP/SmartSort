@@ -26,7 +26,8 @@ class ConfigManager:
             "categories": dict,
             "rules": list,
             "start_minimized": bool,
-            "autostart": bool
+            "autostart": bool,
+            "theme": str
         }
         for key, expected_type in required_keys.items():
             if key in config:
@@ -55,59 +56,137 @@ class ConfigManager:
                         raise ValueError(f"Category '{cat_name}' subfolders must be a dictionary of strings to strings")
 
     def load_config(self):
-        try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
-                    config = json.load(f)
-                    
-                    # Migrate legacy threshold
-                    val = config.get("large_file_threshold_gb")
-                    if isinstance(val, (int, float)) and val < 10000:
-                        config["large_file_threshold_gb"] = int(val * (1024**3))
-                        try:
-                            shutil.copy2(self.config_path, self.config_path + ".bak")
-                        except Exception:
-                            pass
-                        with open(self.config_path, 'w') as out_f:
-                            json.dump(config, out_f, indent=4)
-                            
-                    self.validate_config(config)
-                    return config
-        except Exception as e:
-            # Try to restore from backup
-            bak_path = self.config_path + ".bak"
-            if os.path.exists(bak_path):
-                try:
-                    with open(bak_path, 'r') as f:
-                        config = json.load(f)
-                        val = config.get("large_file_threshold_gb")
-                        if isinstance(val, (int, float)) and val < 10000:
-                            config["large_file_threshold_gb"] = int(val * (1024**3))
-                        self.validate_config(config)
-                        # Restore active file
-                        with open(self.config_path, 'w') as out_f:
-                            json.dump(config, out_f, indent=4)
-                        return config
-                except Exception:
-                    pass
+        # 1. Define complete set of defaults
+        defaults = {
+            "downloads_folder": "~/Downloads",
+            "destination_base": "~",
+            "large_file_threshold_gb": 2.5,
+            "enable_hash_verification": True,
+            "enable_notifications": True,
+            "enable_duplicate_detection": True,
+            "conflict_resolution": "rename",
+            "categories": {
+                "Videos": {
+                    "extensions": [".mkv", ".mp4", ".avi", ".mov"],
+                    "subfolders": {
+                        "Big_Videos": "Videos/Big_Videos",
+                        "Small_Videos": "Videos"
+                    }
+                },
+                "Documents": {
+                    "extensions": [".pdf", ".docx", ".pptx", ".xlsx"]
+                },
+                "Archives": {
+                    "extensions": [".zip", ".rar", ".7z", ".tar.gz"]
+                },
+                "Disk Images": {
+                    "extensions": [".iso"]
+                },
+                "Images": {
+                    "extensions": [".jpg", ".jpeg", ".png", ".webp"]
+                },
+                "Cybersecurity": {
+                    "keywords": ["nmap", "burp", "wireshark", "metasploit", "rockyou", "wordlist", "kali", "parrot"]
+                },
+                "College": {
+                    "keywords": ["assignment", "lecture", "lab", "semester", "notes", "ppt"]
+                }
+            },
+            "rules": [],
+            "start_minimized": False,
+            "autostart": False,
+            "theme": "system"
+        }
 
-        # Try to load default config
+        # 2. Try to load default_config.json to override defaults
         if os.path.exists(self.default_path):
-            with open(self.default_path, 'r') as f:
-                try:
-                    config = json.load(f)
-                    val = config.get("large_file_threshold_gb")
-                    if isinstance(val, (int, float)) and val < 10000:
-                        config["large_file_threshold_gb"] = int(val * (1024**3))
-                    self.validate_config(config)
-                    # Try to save valid default config as current config
-                    os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-                    with open(self.config_path, 'w') as out_f:
-                        json.dump(config, out_f, indent=4)
-                    return config
-                except Exception:
-                    return {}
-        return {}
+            try:
+                with open(self.default_path, 'r') as f:
+                    file_defaults = json.load(f)
+                    if isinstance(file_defaults, dict):
+                        for k, v in file_defaults.items():
+                            defaults[k] = copy.deepcopy(v)
+            except Exception:
+                pass
+
+        # Migrate threshold in defaults if it is in GB representation
+        val = defaults.get("large_file_threshold_gb")
+        if isinstance(val, (int, float)) and val < 10000:
+            defaults["large_file_threshold_gb"] = int(val * (1024**3))
+
+        loaded_config = {}
+        config_loaded_successfully = False
+        config_path_existed = os.path.exists(self.config_path)
+
+        # 3. Load user config from config_path
+        if config_path_existed:
+            try:
+                with open(self.config_path, 'r') as f:
+                    loaded_config = json.load(f)
+                    if isinstance(loaded_config, dict):
+                        config_loaded_successfully = True
+            except Exception:
+                # If reading active config fails, try backup
+                bak_path = self.config_path + ".bak"
+                if os.path.exists(bak_path):
+                    try:
+                        with open(bak_path, 'r') as f:
+                            loaded_config = json.load(f)
+                            if isinstance(loaded_config, dict):
+                                config_loaded_successfully = True
+                    except Exception:
+                        pass
+
+        # 4. Merge loaded_config with defaults, validating type of each key
+        merged_config = copy.deepcopy(defaults)
+        
+        required_keys = {
+            "downloads_folder": str,
+            "destination_base": str,
+            "large_file_threshold_gb": (int, float),
+            "enable_hash_verification": bool,
+            "enable_notifications": bool,
+            "enable_duplicate_detection": bool,
+            "conflict_resolution": str,
+            "categories": dict,
+            "rules": list,
+            "start_minimized": bool,
+            "autostart": bool,
+            "theme": str
+        }
+
+        if config_loaded_successfully:
+            for key, expected_type in required_keys.items():
+                if key in loaded_config:
+                    val = loaded_config[key]
+                    if isinstance(val, expected_type):
+                        merged_config[key] = copy.deepcopy(val)
+                    else:
+                        # Log/warn and retain default value for safety
+                        pass
+
+        # Migrate legacy threshold in merged config
+        val = merged_config.get("large_file_threshold_gb")
+        if isinstance(val, (int, float)) and val < 10000:
+            merged_config["large_file_threshold_gb"] = int(val * (1024**3))
+
+        # 5. Save config if missing, failed to load, or missing keys/type-healed
+        needs_write = (not config_path_existed) or (not config_loaded_successfully)
+        if not needs_write:
+            for key in required_keys:
+                if key not in loaded_config or loaded_config[key] != merged_config[key]:
+                    needs_write = True
+                    break
+        
+        if needs_write:
+            try:
+                os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+                with open(self.config_path, 'w') as f:
+                    json.dump(merged_config, f, indent=4)
+            except Exception:
+                pass
+
+        return merged_config
 
     def save_config(self, config=None):
         if config is None:
@@ -121,7 +200,7 @@ class ConfigManager:
             try:
                 shutil.copy2(self.config_path, self.config_path + ".bak")
             except Exception:
-                pass # Proceed even if backup creation fails (e.g. read-only filesystem check, though unlikely)
+                pass
 
         # 3. Write
         os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
@@ -131,7 +210,28 @@ class ConfigManager:
         self.config = config
 
     def get(self, key, default=None):
-        val = self.config.get(key, default)
+        val = self.config.get(key)
+        if val is None:
+            val = default
+        if val is None:
+            # Last-resort defaults dictionary
+            defaults = {
+                "downloads_folder": "~/Downloads",
+                "destination_base": "~",
+                "large_file_threshold_gb": 2.5,
+                "enable_hash_verification": True,
+                "enable_notifications": True,
+                "enable_duplicate_detection": True,
+                "conflict_resolution": "rename",
+                "categories": {},
+                "rules": [],
+                "start_minimized": False,
+                "autostart": False,
+                "theme": "system"
+            }
+            val = defaults.get(key)
+            if key == "large_file_threshold_gb" and isinstance(val, (int, float)) and val < 10000:
+                val = int(val * (1024**3))
         if key in ("downloads_folder", "destination_base") and isinstance(val, str):
             if val.startswith("~"):
                 return str(Path(val).expanduser())

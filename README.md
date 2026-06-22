@@ -154,6 +154,44 @@ The tray icon context menu provides quick controls:
 * **Open Reports Folder**: Opens the reports directory.
 * **Restart / Exit**: Restarts or shuts down SmartSort.
 
+### Dynamic Tray Status Indicators & Branding
+The system tray icon updates color and tooltip status dynamically to convey the active operational state of the file organizer:
+
+* 🟡 **Yellow (Startup)**: Application startup / initial folder scan phase.
+* 🟢 **Green (Idle/Monitoring)**: Actively watching downloads directory for file events.
+* 🔵 **Blue (Processing)**: Currently organizing a file smaller than 1 GB.
+* 🟠 **Orange (Processing Large File)**: Currently organizing a large file (1 GB or larger).
+* 🔴 **Red (Error)**: Active processing or write error. Persists until the next successful operation.
+* ⚫ **Grey (Paused)**: File monitoring has been paused by the user.
+
+#### Tooltip Contexts
+Tooltips update dynamically depending on the state, using clean formatting:
+* **Idle/Paused Tooltip**:
+  ```text
+  SmartSort
+  Status: Monitoring (or Paused)
+  Files Processed: 124
+  Rules Active: 10
+  ```
+* **Processing Tooltip**:
+  ```text
+  SmartSort
+  Status: Processing
+  File: movie.mkv
+  Size: 850 MB
+  ```
+* **Error Tooltip**:
+  ```text
+  SmartSort
+  Status: Error
+  Last Error: Permission denied
+  ```
+
+#### Branded Icon System
+SmartSort features a custom branded icon system located in [assets/icons/](file:///home/websrp/project/smartsort/assets/icons/):
+* **Main Application Logo** (`logo.png`): Serves as the main window icon, the taskbar icon, the About dialog icon, and the GNOME desktop launcher icon.
+* **Multi-Resolution Support**: We keep the full-resolution source icons and generate optimized tray sizes (16x16, 22x22, 24x24, 32x32). PyQt6 automatically loads these sizes to ensure that icons remain extremely sharp on any display panel scaling or top-bar layout.
+
 ---
 
 ## Daemon Mode
@@ -182,6 +220,40 @@ The Settings panel includes GUI buttons to manage the background service at the 
 * **Start Service**: Starts the background daemon via systemd.
 * **Stop Service**: Stops the active systemd service.
 * **Restart Service**: Restarts the systemd daemon.
+
+### 4. Terminal Command Line Instructions
+
+You can also manage the SmartSort services directly from your terminal:
+
+* **Enable on Login**:
+  ```bash
+  systemctl --user enable smartsort.service
+  ```
+* **Start Service Immediately**:
+  ```bash
+  systemctl --user start smartsort.service
+  ```
+* **Stop Service**:
+  ```bash
+  systemctl --user stop smartsort.service
+  ```
+* **Disable on Login**:
+  ```bash
+  systemctl --user disable smartsort.service
+  ```
+* **Check Service Status**:
+  ```bash
+  systemctl --user status smartsort.service
+  ```
+* **View Service Logs**:
+  ```bash
+  journalctl --user -u smartsort.service -n 50 -f
+  ```
+
+#### Comparison of Auto-Launch Methods:
+* **GNOME Autostart (`.desktop` entry)**: Best for standard GUI environments. Launches the PyQt6 GUI minimized to the system tray on login, giving you full access to the interactive dashboard, rule editor, and system tray actions.
+* **Systemd User Service (`.service` entry)**: Best for headless/server environments or users who prefer a quiet background organizer. Runs in a dedicated background `--daemon` mode, avoiding Qt GUI initialization overhead.
+* *Note: Avoid running both concurrently to prevent redundant directory watchers and race conditions.*
 
 ---
 
@@ -271,6 +343,11 @@ System logs and development summaries are stored under `reports/`:
 * [phase4_background_service_report.md](reports/phase4_background_service_report.md): Background service daemon and tray integration report.
 * [ui_modernization_report.md](reports/ui_modernization_report.md): GNOME Adwaita UI design modernization report.
 * [service_installation_report.md](reports/service_installation_report.md): User systemd automation installation report.
+* [startup_automation_fix_report.md](reports/startup_automation_fix_report.md): Report on startup automation fixes, path replacements, and systemd integration.
+* [background_startup_report.md](reports/background_startup_report.md): Report on true background operation, GNOME Autostart integration, and system tray startup robustness.
+* [config_initialization_fix_report.md](reports/config_initialization_fix_report.md): Report on configuration initialization fixes, defaults validation, and crash prevention.
+* [tray_status_indicator_report.md](reports/tray_status_indicator_report.md): Report on dynamic system tray status indicators, tooltips, and state management.
+* [icon_system_implementation_report.md](reports/icon_system_implementation_report.md): Report on SmartSort branded icon system and dynamic tray status indicator implementation.
 
 ---
 

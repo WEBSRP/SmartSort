@@ -700,6 +700,7 @@ def test_service_status_detection(temp_dir, monkeypatch):
     from pathlib import Path
     from unittest.mock import MagicMock
     from src.gui.main_window import SmartSortGUI
+    import subprocess
     
     monkeypatch.setattr(Path, "home", lambda: temp_dir)
     
@@ -709,22 +710,63 @@ def test_service_status_detection(temp_dir, monkeypatch):
     gui = DummyGUI()
     gui.get_service_status = SmartSortGUI.get_service_status.__get__(gui, DummyGUI)
     
+    # 1. Mock subprocess.run for "Not Installed" state
+    mock_not_found = MagicMock()
+    mock_not_found.stdout = "not-found\n"
+    mock_not_found.stderr = "No such file or directory\n"
+    mock_not_found.returncode = 4
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_not_found)
     assert gui.get_service_status() == "Not Installed"
     
+    # Create dummy service file
     service_dir = temp_dir / ".config" / "systemd" / "user"
     service_dir.mkdir(parents=True)
     (service_dir / "smartsort.service").write_text("dummy")
     
-    import subprocess
-    mock_completed_active = MagicMock()
-    mock_completed_active.stdout = "active\n"
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_completed_active)
-    assert gui.get_service_status() == "Active"
+    # 2. Mock for "Running" state
+    def mock_run_running(cmd, *args, **kwargs):
+        res = MagicMock()
+        if "is-enabled" in cmd:
+            res.stdout = "enabled\n"
+            res.stderr = ""
+            res.returncode = 0
+        elif "is-active" in cmd:
+            res.stdout = "active\n"
+            res.stderr = ""
+            res.returncode = 0
+        return res
+    monkeypatch.setattr(subprocess, "run", mock_run_running)
+    assert gui.get_service_status() == "Running"
     
-    mock_completed_inactive = MagicMock()
-    mock_completed_inactive.stdout = "inactive\n"
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_completed_inactive)
-    assert gui.get_service_status() == "Inactive"
+    # 3. Mock for "Stopped" state
+    def mock_run_stopped(cmd, *args, **kwargs):
+        res = MagicMock()
+        if "is-enabled" in cmd:
+            res.stdout = "enabled\n"
+            res.stderr = ""
+            res.returncode = 0
+        elif "is-active" in cmd:
+            res.stdout = "inactive\n"
+            res.stderr = ""
+            res.returncode = 3
+        return res
+    monkeypatch.setattr(subprocess, "run", mock_run_stopped)
+    assert gui.get_service_status() == "Stopped"
+
+    # 4. Mock for "Disabled" state
+    def mock_run_disabled(cmd, *args, **kwargs):
+        res = MagicMock()
+        if "is-enabled" in cmd:
+            res.stdout = "disabled\n"
+            res.stderr = ""
+            res.returncode = 1
+        elif "is-active" in cmd:
+            res.stdout = "inactive\n"
+            res.stderr = ""
+            res.returncode = 3
+        return res
+    monkeypatch.setattr(subprocess, "run", mock_run_disabled)
+    assert gui.get_service_status() == "Disabled"
 
 def test_window_events_tray(monkeypatch):
     from unittest.mock import MagicMock
@@ -1084,5 +1126,158 @@ def test_app_startup_without_tray_shows_window(temp_dir, monkeypatch):
         pass
         
     mock_gui.show.assert_called_once()
+
+def test_config_initialization_robustness(temp_dir):
+    from src.utils.config import ConfigManager
+    from pathlib import Path
+    
+    config_file = temp_dir / "config.json"
+    default_file = temp_dir / "default_config.json"
+    
+    # Create a minimal default config
+    default_content = {
+        "downloads_folder": "~/Downloads",
+        "destination_base": "~",
+        "large_file_threshold_gb": 2.5,
+        "enable_hash_verification": True,
+        "enable_notifications": True,
+        "enable_duplicate_detection": True,
+        "conflict_resolution": "rename",
+        "categories": {},
+        "rules": [],
+        "start_minimized": False,
+        "autostart": False,
+        "theme": "system"
+    }
+    import json
+    with open(default_file, 'w') as f:
+        json.dump(default_content, f)
+        
+    # Scenario 1: Config file is missing
+    manager = ConfigManager(config_path=str(config_file), default_path=str(default_file))
+    # It should have written the config file
+    assert config_file.exists()
+    assert manager.get("downloads_folder") == str(Path("~/Downloads").expanduser())
+    assert manager.get("enable_notifications") is True
+    assert manager.get("theme") == "system"
+
+    # Scenario 2: Config file contains corrupted JSON
+    with open(config_file, 'w') as f:
+        f.write("{invalid json...")
+    
+    # We load again - it should fall back to default config without crashing
+    manager2 = ConfigManager(config_path=str(config_file), default_path=str(default_file))
+    assert manager2.get("theme") == "system"
+    
+    # Scenario 3: Config file is missing some keys
+    partial_config = {
+        "downloads_folder": "/custom/downloads",
+        "theme": "dark"
+    }
+    with open(config_file, 'w') as f:
+        json.dump(partial_config, f)
+        
+    manager3 = ConfigManager(config_path=str(config_file), default_path=str(default_file))
+    # It should merge defaults for missing keys
+    assert manager3.get("downloads_folder") == "/custom/downloads"
+    assert manager3.get("theme") == "dark"
+    assert manager3.get("enable_notifications") is True  # Merged from default
+    assert manager3.get("large_file_threshold_gb") == int(2.5 * (1024**3))  # Merged & migrated from default
+
+    # Scenario 4: Config file has wrong type for a key
+    wrong_type_config = {
+        "enable_notifications": "not_a_bool"  # wrong type
+    }
+    with open(config_file, 'w') as f:
+        json.dump(wrong_type_config, f)
+        
+    manager4 = ConfigManager(config_path=str(config_file), default_path=str(default_file))
+    # Invalid key type should be replaced by default bool True, not crash
+    assert manager4.get("enable_notifications") is True
+
+def test_tray_state_transitions():
+    from unittest.mock import MagicMock
+    from src.gui.tray_manager import TrayStateManager, TrayState
+
+    mock_tray = MagicMock()
+    manager = TrayStateManager(mock_tray)
+
+    # 1. Startup State
+    manager.set_startup()
+    assert manager.current_state == TrayState.STARTUP
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Startup / Initial Scan")
+
+    # 2. Monitoring State
+    manager.set_monitoring(15, 8)
+    assert manager.current_state == TrayState.IDLE
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Monitoring\nFiles Processed: 15\nRules Active: 8")
+
+    # 3. Paused State
+    manager.set_paused(15, 8)
+    assert manager.current_state == TrayState.PAUSED
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Paused\nFiles Processed: 15\nRules Active: 8")
+
+    # 4. Processing Small File (< 1 GB)
+    manager.set_processing("small.txt", 500 * 1024 * 1024)
+    assert manager.current_state == TrayState.PROCESSING_SMALL
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Processing\nFile: small.txt\nSize: 500 MB")
+
+    # 5. Processing Large File (>= 1 GB)
+    manager.set_processing("large.mkv", 2 * 1024 * 1024 * 1024)
+    assert manager.current_state == TrayState.PROCESSING_LARGE
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Processing\nFile: large.mkv\nSize: 2 GB")
+
+    # 6. Error State
+    manager.set_error("Disk full")
+    assert manager.current_state == TrayState.ERROR
+    assert manager.has_active_error is True
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Error\nLast Error: Disk full")
+
+    # 7. Resume keeps error active
+    manager.set_monitoring(15, 8)
+    assert manager.current_state == TrayState.ERROR
+    
+    # 8. Success clears error
+    manager.set_success(16, 8)
+    assert manager.current_state == TrayState.IDLE
+    assert manager.has_active_error is False
+    mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Monitoring\nFiles Processed: 16\nRules Active: 8")
+
+
+def test_ensure_user_icons_installed(tmp_path, monkeypatch):
+    import os
+    import main
+    from unittest.mock import MagicMock
+    
+    # Mock expanduser to point to tmp_path
+    mock_home = tmp_path / "user_home"
+    os.makedirs(mock_home)
+    monkeypatch.setattr("os.path.expanduser", lambda path: path.replace("~", str(mock_home)))
+    
+    # Mock subprocess.run
+    mock_run = MagicMock()
+    monkeypatch.setattr("subprocess.run", mock_run)
+    
+    # Call ensure_user_icons_installed
+    mock_logger = MagicMock()
+    main.ensure_user_icons_installed(mock_logger)
+    
+    # Check that user hicolor directory exists
+    user_hicolor_dir = mock_home / ".local" / "share" / "icons" / "hicolor"
+    assert user_hicolor_dir.exists()
+    
+    # Verify presence of smartsort.png and color icons in all folders
+    sizes = ["16x16", "22x22", "24x24", "32x32", "scalable"]
+    for size in sizes:
+        apps_dir = user_hicolor_dir / size / "apps"
+        assert apps_dir.exists()
+        assert (apps_dir / "smartsort.png").exists()
+        
+        for color in ["green", "blue", "orange", "red", "grey", "yellow"]:
+            assert (apps_dir / f"smartsort-{color}.png").exists()
+            
+    # Verify icon cache update was called
+    mock_run.assert_called()
+
 
 

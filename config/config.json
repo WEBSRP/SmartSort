@@ -5,8 +5,72 @@
     "enable_hash_verification": true,
     "enable_notifications": true,
     "enable_duplicate_detection": true,
-    "start_minimized": true,
-    "autostart": true,
+    "conflict_resolution": "rename",
+    "categories": {
+        "Videos": {
+            "extensions": [
+                ".mkv",
+                ".mp4",
+                ".avi",
+                ".mov"
+            ],
+            "subfolders": {
+                "Big_Videos": "Videos/Big_Videos",
+                "Small_Videos": "Videos"
+            }
+        },
+        "Documents": {
+            "extensions": [
+                ".pdf",
+                ".docx",
+                ".pptx",
+                ".xlsx"
+            ]
+        },
+        "Archives": {
+            "extensions": [
+                ".zip",
+                ".rar",
+                ".7z",
+                ".tar.gz"
+            ]
+        },
+        "Disk Images": {
+            "extensions": [
+                ".iso"
+            ]
+        },
+        "Images": {
+            "extensions": [
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".webp"
+            ]
+        },
+        "Cybersecurity": {
+            "keywords": [
+                "nmap",
+                "burp",
+                "wireshark",
+                "metasploit",
+                "rockyou",
+                "wordlist",
+                "kali",
+                "parrot"
+            ]
+        },
+        "College": {
+            "keywords": [
+                "assignment",
+                "lecture",
+                "lab",
+                "semester",
+                "notes",
+                "ppt"
+            ]
+        }
+    },
     "rules": [
         {
             "id": "img_low",
@@ -106,43 +170,16 @@
                 {
                     "type": "size",
                     "operator": ">=",
-                    "value": "1GB"
+                    "value": "1073741824GB"
                 }
             ],
             "destination": "Videos/Big_Videos"
         },
         {
-            "id": "legacy_college",
-            "name": "College",
-            "enabled": true,
-            "priority": 5,
-            "conditions": [
-                {
-                    "type": "extension",
-                    "value": [
-                        ".pptx",
-                        ".pptm"
-                    ]
-                },
-                {
-                    "type": "filename",
-                    "value": [
-                        "assignment",
-                        "lecture",
-                        "lab",
-                        "semester",
-                        "notes",
-                        "ppt"
-                    ]
-                }
-            ],
-            "destination": "Documents/College"
-        },
-        {
             "id": "legacy_videos_small",
             "name": "Videos",
             "enabled": true,
-            "priority": 6,
+            "priority": 5,
             "conditions": [
                 {
                     "type": "extension",
@@ -160,7 +197,7 @@
             "id": "legacy_documents",
             "name": "Documents",
             "enabled": true,
-            "priority": 7,
+            "priority": 6,
             "conditions": [
                 {
                     "type": "extension",
@@ -178,7 +215,7 @@
             "id": "legacy_archives",
             "name": "Archives",
             "enabled": true,
-            "priority": 8,
+            "priority": 7,
             "conditions": [
                 {
                     "type": "extension",
@@ -196,7 +233,7 @@
             "id": "legacy_disk images",
             "name": "Disk Images",
             "enabled": true,
-            "priority": 9,
+            "priority": 8,
             "conditions": [
                 {
                     "type": "extension",
@@ -211,7 +248,7 @@
             "id": "legacy_cybersecurity",
             "name": "Cybersecurity",
             "enabled": true,
-            "priority": 10,
+            "priority": 9,
             "conditions": [
                 {
                     "type": "filename",
@@ -228,8 +265,29 @@
                 }
             ],
             "destination": "Cybersecurity"
+        },
+        {
+            "id": "legacy_college",
+            "name": "College",
+            "enabled": true,
+            "priority": 10,
+            "conditions": [
+                {
+                    "type": "filename",
+                    "value": [
+                        "assignment",
+                        "lecture",
+                        "lab",
+                        "semester",
+                        "notes",
+                        "ppt"
+                    ]
+                }
+            ],
+            "destination": "Documents/College"
         }
     ],
-    "conflict_resolution": "rename",
+    "start_minimized": true,
+    "autostart": true,
     "theme": "dark"
 }

@@ -7,6 +7,9 @@
   "enable_duplicate_detection": true,
   "start_minimized": false,
   "autostart": false,
+  "theme": "system",
+  "conflict_resolution": "rename",
+  "rules": [],
   "categories": {
     "Videos": {
       "extensions": [".mkv", ".mp4", ".avi", ".mov"],
