@@ -1,0 +1,3 @@
+#!/bin/bash
+export PYTHONPATH=/usr/share/smartsort
+exec python3 /usr/share/smartsort/main.py "$@"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SmartSort
+Comment=Intelligent Download Organizer
+Exec=/usr/bin/smartsort
+Icon=smartsort
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=Organizer;Files;Downloads;

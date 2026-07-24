@@ -1,0 +1,11 @@
+[Unit]
+Description=SmartSort File Organizer Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/smartsort --daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

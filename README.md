@@ -120,14 +120,44 @@ Destinations support template variables:
 
 SmartSort is designed for Linux systems. No path modifications are required after installation. The application automatically detects and adapts to the current user's home directory.
 
-### 1. Debian / Ubuntu System Dependencies
+### Packaged Releases (Recommended)
+
+SmartSort is available via native packages and universal formats.
+
+#### Debian / Ubuntu (.deb)
+```bash
+sudo dpkg -i smartsort_0.5.0_all.deb
+sudo apt-get install -f # to install dependencies
+```
+The DEB package installs the application launcher, desktop entry, system tray icons, and systemd user services automatically. To uninstall: `sudo dpkg -r smartsort`.
+
+#### Flatpak (com.smartsort.SmartSort)
+```bash
+flatpak install flathub com.smartsort.SmartSort
+flatpak run com.smartsort.SmartSort
+```
+
+#### AppImage
+```bash
+chmod +x SmartSort-x86_64.AppImage
+./SmartSort-x86_64.AppImage
+```
+
+#### Fedora / RHEL (.rpm)
+```bash
+sudo dnf install smartsort-0.5.0-1.noarch.rpm
+```
+
+### Manual Installation (From Source)
+
+#### 1. System Dependencies
 Ensure Python 3 and basic graphical environment tools are installed:
 ```bash
 sudo apt update
 sudo apt install python3 python3-venv python3-pip libglib2.0-0
 ```
 
-### 2. Setup Virtual Environment & Dependencies
+#### 2. Setup Virtual Environment & Dependencies
 Initialize the virtual environment inside the repository:
 ```bash
 python3 -m venv smartsort
@@ -135,7 +165,7 @@ source smartsort/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Run the Application
+#### 3. Run the Application
 ```bash
 python3 main.py
 ```
