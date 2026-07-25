@@ -21,13 +21,9 @@ dist/
 site/
 *.egg-info/
 .eggs/
-packaging/appimage/appimagetool
 
 # Package Outputs
 *.deb
-*.AppImage
-*.flatpak
-*.rpm
 *.tar.gz
 
 # Runtime Configuration
@@ -70,10 +66,3 @@ desktop.ini
 scratch/
 status.md
 tree.md
-
-# Flatpak builder cache
-.flatpak-builder/
-
-# Generated Wheels
-python-wheels/
-packaging/flatpak/python-wheels/

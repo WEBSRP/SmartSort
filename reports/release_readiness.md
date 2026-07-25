@@ -1,22 +1,40 @@
-# Release Readiness Report
+# Release Readiness
 
-This report confirms the readiness of SmartSort for its official public v1.0 release.
+Date: 2026-07-25
+Target: SmartSort v1.0.1
 
----
+## Official Release Package
 
-## 1. Executive Summary
+Debian (`.deb`)
 
-SmartSort has transitioned from a development codebase into a mature, production-ready desktop application. Every quality criteria set for the v1.0 release is successfully met:
-- **XDG Specification Compliance**: Zero configuration pollution in repository folders. All operations are isolated inside standard XDG base directories.
-- **Centralized Build Outputs**: All packaging outputs are consolidated within `build/`, keeping `packaging/` and the repository root clean of compile files.
-- **Continuous Integration**: Configured automated workflows to run checks, execute tests, and build package targets.
-- **Community Health**: Standardized community templates and LICENSE rules are integrated into the repository.
+## Officially Supported
 
----
+- Debian
+- Ubuntu
+- Linux Mint
+- Other Debian-based distributions
 
-## 2. Release Metrics
+## Future Planned Packaging
 
-- **Current Version**: `1.0.0` (as defined in `src/version.py`).
-- **Build Status**: Successful (Debian, AppImage, Flatpak, and RPM targets compile cleanly).
-- **Test Status**: Successful (All 38 test suites pass successfully).
-- **Git Hygiene**: Clean status verified.
+- AppImage
+- Flatpak
+- RPM
+
+## Readiness Summary
+
+The repository is internally consistent with a Debian-only v1.0.1 release. Unsupported package implementations, obsolete build directories, stale CI artifact paths, and package-specific historical reports have been removed or replaced.
+
+## Confidence Scores
+
+- Debian Packaging: 9/10. Native `.deb` build path is present and validated.
+- CI: 9/10. Workflow now validates tests and the Debian artifact only.
+- Documentation: 9/10. Current docs describe Debian as the only release package and future package formats as planned work.
+- Repository Consistency: 9/10. Release tree contains only Debian packaging.
+- Release Readiness: 9/10. Remaining risk is normal platform variance across Debian-based distributions.
+
+Overall Release Confidence: 9/10
+
+## Decision
+
+✅ Debian Release Ready
+

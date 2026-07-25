@@ -49,15 +49,32 @@ class MonitorThread(QThread):
         self.watch_path = watch_path
         self.organizer = organizer
         self.monitor = FileMonitor(self.watch_path, self.organizer, self.new_file_signal.emit)
+        self._stop_requested = False
 
     def run(self):
-        self.monitor.start()
+        if self._stop_requested or self.isInterruptionRequested():
+            return
+
+        try:
+            self.monitor.start()
+        except Exception:
+            return
+
+        if self._stop_requested or self.isInterruptionRequested():
+            try:
+                self.monitor.stop()
+            except Exception:
+                pass
+            return
+
         self.exec() # Keep thread alive
 
     def stop(self):
+        self._stop_requested = True
+        self.requestInterruption()
         try:
             self.monitor.stop()
-        except RuntimeError:
+        except Exception:
             pass
         finally:
             self.quit()

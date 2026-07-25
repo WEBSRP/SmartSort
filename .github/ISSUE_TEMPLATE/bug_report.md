@@ -21,10 +21,10 @@ Steps to reproduce the behavior:
 A clear and concise description of what you expected to happen.
 
 **Desktop Environment (please complete the following information):**
- - OS: [e.g. Debian, Fedora, Ubuntu]
+ - OS: [e.g. Debian, Ubuntu, Linux Mint]
  - Desktop Environment: [e.g. GNOME, KDE, XFCE]
- - SmartSort Packaging: [e.g. Source, Debian, AppImage, Flatpak]
- - SmartSort Version: [e.g. v1.0.0]
+ - SmartSort Packaging: [e.g. Source, Debian .deb]
+ - SmartSort Version: [e.g. v1.0.1]
 
 **Additional Context**
 Add any other context about the problem here (e.g. check standard logs folder: `~/.local/state/smartsort/`).

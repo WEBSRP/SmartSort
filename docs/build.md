@@ -1,6 +1,6 @@
 # Compilation & Build Guide
 
-This document describes how to set up your developer environment and compile the SmartSort package binaries locally.
+This document describes how to set up your developer environment and compile the official SmartSort Debian package locally.
 
 ---
 
@@ -32,32 +32,29 @@ To run and debug SmartSort from source:
 
 ---
 
-## 2. Compiling Packages
+## 2. Compiling the Release Package
 
-SmartSort compiles release-ready packages dynamically from the active source tree into the central `build/` output directory. 
+SmartSort v1.0.1 officially supports Debian-based distributions. The release build compiles dynamically from the active source tree into the central `build/deb/` output directory.
 
-Before building, verify the target version in [src/version.py](file:///home/websrp/SmartSort/src/version.py).
+Before building, verify the target version in [src/version.py](../src/version.py).
 
--   **Build Debian (`.deb`)**:
-    ```bash
-    ./packaging/debian/build_deb.sh
-    ```
-    Outputs to `build/deb/smartsort_<version>_all.deb`.
+### Officially Supported
 
--   **Build AppImage (`.AppImage`)**:
-    ```bash
-    ./packaging/appimage/build_appimage.sh
-    ```
-    Outputs to `build/appimage/SmartSort-<version>-x86_64.AppImage`.
+- Debian
+- Ubuntu
+- Linux Mint
+- Other Debian-based distributions
 
--   **Build Flatpak (`.flatpak`)**:
-    ```bash
-    ./packaging/flatpak/build_flatpak.sh
-    ```
-    Outputs to `build/flatpak/smartsort_<version>.flatpak`.
+### Future Planned Packaging
 
--   **Build RPM (`.rpm`)**:
-    ```bash
-    ./packaging/rpm/build_rpm.sh
-    ```
-    Outputs custom `.spec` specifications and source tarballs to `build/rpm/`.
+- AppImage
+- Flatpak
+- RPM
+
+### Build Debian (`.deb`)
+
+```bash
+./packaging/debian/build_deb.sh
+```
+
+Outputs to `build/deb/smartsort_<version>_all.deb`.

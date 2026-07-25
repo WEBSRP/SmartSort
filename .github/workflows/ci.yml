@@ -92,7 +92,7 @@ jobs:
           path: pytest.log
 
   build:
-    name: Build Packages
+    name: Build Debian Package
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -113,19 +113,10 @@ jobs:
           chmod +x packaging/debian/build_deb.sh
           ./packaging/debian/build_deb.sh
 
-      - name: Build AppImage Package
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: 1
-        run: |
-          chmod +x packaging/appimage/build_appimage.sh
-          ./packaging/appimage/build_appimage.sh
-
-      - name: Upload Build Artifacts
+      - name: Upload Debian Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SmartSort-Packages
+          name: SmartSort-Debian-Package
           if-no-files-found: error
           retention-days: 30
-          path: |
-            build/deb/*.deb
-            build/appimage/*.AppImage
+          path: build/deb/*.deb

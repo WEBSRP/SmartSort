@@ -1,4 +1,0 @@
-#!/bin/bash
-HERE="$(dirname "$(readlink -f "${0}")")"
-export PYTHONPATH="${HERE}/usr/share/smartsort"
-exec python3 "${HERE}/usr/share/smartsort/main.py" "$@"

@@ -1,5 +1,6 @@
 import os
 import time
+from pathlib import Path
 from typing import Tuple, Union
 from .utils.file_utils import FileUtils
 from .utils.config import ConfigManager
@@ -38,8 +39,11 @@ class FileOrganizer:
         else:
             relative_dest = os.path.join(relative_dest, filename)
             
-        base_dest = self.config.get("destination_base", os.path.expanduser("~"))
-        return os.path.join(base_dest, relative_dest)
+        base_dest = Path(self.config.get("destination_base", os.path.expanduser("~"))).expanduser().resolve()
+        dest_path = (base_dest / relative_dest).resolve(strict=False)
+        if os.path.commonpath([str(base_dest), str(dest_path)]) != str(base_dest):
+            raise ValueError(f"Destination escapes configured base directory: {relative_dest}")
+        return str(dest_path)
 
     def process_file(self, file_path: str, user_approved: bool = False) -> Tuple[str, str]:
         """
@@ -50,7 +54,10 @@ class FileOrganizer:
             return "SKIPPED", "File already processed or removed"
 
         category = self.get_category(file_path)
-        dest_path = self.get_destination_path(file_path, category)
+        try:
+            dest_path = self.get_destination_path(file_path, category)
+        except ValueError as e:
+            return "ERROR", str(e)
         filename = os.path.basename(file_path)
 
         # Check for large video approval
@@ -104,5 +111,4 @@ class FileOrganizer:
         else:
             self.logger.log_action(filename, file_path, dest_path, "COPY_FAILED", "ERROR", info)
             return "ERROR", info
-
 

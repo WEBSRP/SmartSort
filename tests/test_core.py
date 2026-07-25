@@ -147,6 +147,38 @@ def test_conflict_policy_rename(temp_dir):
     assert os.path.exists(dst)
     assert os.path.exists(info)
 
+
+def test_destination_path_cannot_escape_base(temp_dir):
+    src = temp_dir / "src.txt"
+    src.write_text("content")
+    base_dir = temp_dir / "dest"
+    base_dir.mkdir()
+
+    class MockConfig:
+        def get(self, key, default=None):
+            if key == "destination_base":
+                return str(base_dir)
+            if key == "rules":
+                return [{
+                    "id": "escape",
+                    "name": "Escape",
+                    "enabled": True,
+                    "priority": 1,
+                    "conditions": [],
+                    "destination": "../outside"
+                }]
+            return default
+
+    organizer = FileOrganizer(MockConfig(), SmartSortLogger(log_dir="test_logs"))
+
+    result, info = organizer.process_file(str(src))
+
+    assert result == "ERROR"
+    assert "escapes configured base directory" in info
+    assert src.exists()
+    assert not (temp_dir / "outside" / "src.txt").exists()
+
+
 def test_processed_files_cleanup():
     from src.monitor import DownloadHandler
     import time
@@ -1376,6 +1408,21 @@ def test_autostart_command_resolution(temp_dir, monkeypatch):
     assert os.path.abspath(sys.argv[0]) in cmd
 
 
+def test_monitor_thread_stop_before_start_exits(temp_dir, qapp):
+    from src.gui.main_window import MonitorThread
+    from unittest.mock import MagicMock
+
+    organizer = MagicMock()
+    organizer.logger = MagicMock()
+
+    monitor_thread = MonitorThread(str(temp_dir), organizer)
+    monitor_thread.stop()
+    monitor_thread.start()
+
+    assert monitor_thread.wait(1000) is True
+    assert monitor_thread.isRunning() is False
+
+
 def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
     from src.gui.main_window import SmartSortGUI
     from unittest.mock import MagicMock
@@ -1523,6 +1570,4 @@ def test_xdg_paths_and_migration(tmp_path, monkeypatch):
     assert migrated_log_file.read_text() == "Legacy log data"
     assert not legacy_log_file.exists()
     assert not legacy_logs_dir.exists()
-
-
 

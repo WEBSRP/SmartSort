@@ -2,6 +2,16 @@
 
 All notable changes to the SmartSort project will be documented in this file.
 
+## [1.0.1] - 2026-07-25
+
+### Fixed
+- Fixed a `MonitorThread` startup/shutdown race that could leave the Qt event loop running when a stop request arrived before the thread entered `exec()`, causing CI to hang before the pytest summary.
+- Blocked rule destinations that resolve outside the configured destination base directory.
+
+### Changed
+- Consolidated the v1.0.1 release as a Debian-first release for Debian, Ubuntu, Linux Mint, and other Debian-based distributions.
+- Removed unsupported package implementations and CI artifact generation for future planned package formats.
+
 ## [1.0.0] - 2026-07-25
 
 ### Added
@@ -10,7 +20,7 @@ All notable changes to the SmartSort project will be documented in this file.
   - Logs stored inside `$XDG_STATE_HOME/smartsort/`.
 - Central Path Manager class `AppPaths` for programmatic path resolutions.
 - Automatic settings and log migration logic from legacy directories.
-- Centralized `build/` directory for generated package binaries (`deb`, `appimage`, `flatpak`, `rpm`).
+- Centralized `build/` directory for generated package binaries.
 - GitHub Actions CI workflow configuration.
 - Standard open-source community files: `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and issue/pull request templates.
 - Developer documentation: `docs/architecture.md`, `docs/build.md`, `docs/packaging.md`, `docs/configuration.md`, `docs/release.md`, `docs/rule_engine.md`.

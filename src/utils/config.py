@@ -45,9 +45,13 @@ class ConfigManager:
                 except Exception:
                     pass
 
-        # Create cache and data dirs to guarantee their existence as per spec
-        AppPaths.cache_dir()
-        AppPaths.data_dir()
+        # Warm up optional XDG directories, but do not make configuration loading
+        # fail on restricted/read-only home directories.
+        try:
+            AppPaths.cache_dir()
+            AppPaths.data_dir()
+        except OSError:
+            pass
 
         self.config = self.load_config()
 
