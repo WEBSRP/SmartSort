@@ -1376,7 +1376,7 @@ def test_autostart_command_resolution(temp_dir, monkeypatch):
     assert os.path.abspath(sys.argv[0]) in cmd
 
 
-def test_verify_and_repair_startup_config(temp_dir, monkeypatch):
+def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
     from src.gui.main_window import SmartSortGUI
     from unittest.mock import MagicMock
     from src.utils.autostart import AutostartManager
@@ -1400,34 +1400,48 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch):
     mock_question = MagicMock(return_value=QMessageBox.StandardButton.Yes)
     monkeypatch.setattr(QMessageBox, "question", mock_question)
     
-    # Mock QApplication or get existing instance
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
-    
-    # Create GUI instance (partially mocked)
-    gui = SmartSortGUI()
-    gui.config.set("autostart", True)
-    
-    # Ensure autostart manager uses temporary dir
-    autostart_dir = temp_dir / "autostart"
-    gui.autostart_manager = AutostartManager(autostart_dir=str(autostart_dir))
-    
-    # Case 1: Entry is missing
-    assert not (autostart_dir / "smartsort.desktop").exists()
-    gui.verify_and_repair_startup_config()
-    
-    # The prompt should be shown and files written
-    mock_question.assert_called()
-    assert (autostart_dir / "smartsort.desktop").exists()
-    
-    # Reset mocks and files
-    mock_question.reset_mock()
-    (autostart_dir / "smartsort.desktop").write_text("corrupted content")
-    
-    # Case 2: Entry is corrupted
-    gui.verify_and_repair_startup_config()
-    mock_question.assert_called()
-    assert "Type=Application" in (autostart_dir / "smartsort.desktop").read_text()
+    gui = None
+    try:
+        # Create GUI instance (partially mocked)
+        gui = SmartSortGUI()
+        gui.config.set("autostart", True)
+        
+        # Ensure autostart manager uses temporary dir
+        autostart_dir = temp_dir / "autostart"
+        gui.autostart_manager = AutostartManager(autostart_dir=str(autostart_dir))
+        
+        # Case 1: Entry is missing
+        assert not (autostart_dir / "smartsort.desktop").exists()
+        gui.verify_and_repair_startup_config()
+        
+        # The prompt should be shown and files written
+        mock_question.assert_called()
+        assert (autostart_dir / "smartsort.desktop").exists()
+        
+        # Reset mocks and files
+        mock_question.reset_mock()
+        (autostart_dir / "smartsort.desktop").write_text("corrupted content")
+        
+        # Case 2: Entry is corrupted
+        gui.verify_and_repair_startup_config()
+        mock_question.assert_called()
+        assert "Type=Application" in (autostart_dir / "smartsort.desktop").read_text()
+    finally:
+        if gui is not None:
+            gui.really_exit = True
+            if hasattr(gui, "status_timer"):
+                gui.status_timer.stop()
+            if hasattr(gui, "monitor_thread"):
+                gui.monitor_thread.stop()
+                gui.monitor_thread.wait()
+            if hasattr(gui, "tray_icon"):
+                gui.tray_icon.hide()
+                gui.tray_icon.deleteLater()
+            gui.close()
+            gui.deleteLater()
+        # Process any pending cleanup events
+        qapp.processEvents()
+
 
 
 def test_xdg_paths_and_migration(tmp_path, monkeypatch):
