@@ -55,8 +55,12 @@ class MonitorThread(QThread):
         self.exec() # Keep thread alive
 
     def stop(self):
-        self.monitor.stop()
-        self.quit()
+        try:
+            self.monitor.stop()
+        except RuntimeError:
+            pass
+        finally:
+            self.quit()
 
     def get_handler(self):
         return self.monitor.event_handler

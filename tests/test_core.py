@@ -1433,7 +1433,9 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
                 gui.status_timer.stop()
             if hasattr(gui, "monitor_thread"):
                 gui.monitor_thread.stop()
-                gui.monitor_thread.wait()
+                gui.monitor_thread.wait(5000)
+            if hasattr(gui, "threadpool"):
+                gui.threadpool.waitForDone(1000)
             if hasattr(gui, "tray_icon"):
                 gui.tray_icon.hide()
                 gui.tray_icon.deleteLater()
