@@ -12,7 +12,7 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       QT_QPA_PLATFORM: offscreen
@@ -55,13 +55,41 @@ jobs:
           python -m compileall src main.py
 
       - name: Run Test Suite
+        shell: bash
         run: |
+          set -euxo pipefail
+
           xvfb-run -a python -m pytest \
             -vv \
             -s \
             --durations=20 \
             --durations-min=1 \
-            tests/
+            tests/ | tee pytest.log
+
+          echo ""
+          echo "========== PYTEST FINISHED =========="
+          echo ""
+
+          echo "Running processes:"
+          ps -ef
+
+          echo ""
+          echo "Python processes:"
+          pgrep -af python || true
+
+          echo ""
+          echo "Xvfb processes:"
+          pgrep -af Xvfb || true
+
+          echo ""
+          echo "========== JOB COMPLETE =========="
+
+      - name: Upload Pytest Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log
+          path: pytest.log
 
   build:
     name: Build Packages
