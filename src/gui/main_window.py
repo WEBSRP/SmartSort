@@ -16,6 +16,7 @@ from src.utils.config import ConfigManager
 from src.utils.logger import SmartSortLogger
 from src.organizer import FileOrganizer
 from src.monitor import FileMonitor
+from src.utils.packaging import detect_package_type, PackageType, Capability, has_capability, check_appimage_moved
 
 class WorkerSignals(QObject):
     finished = pyqtSignal(str, str, str) # file_path, result, info
@@ -67,11 +68,10 @@ class SmartSortGUI(QMainWindow):
         
         # Set Window Icon using absolute path resolution based on project root
         from PyQt6.QtGui import QIcon
-        current_file_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_file_dir))
+        from src.utils.paths import AppPaths
         
         # Add assets/icons to theme paths just in case it is not registered yet
-        icon_dir = os.path.join(project_root, "assets", "icons")
+        icon_dir = str(AppPaths.resource_dir() / "icons")
         current_paths = QIcon.themeSearchPaths()
         if icon_dir not in current_paths:
             QIcon.setThemeSearchPaths(current_paths + [icon_dir])
@@ -80,14 +80,16 @@ class SmartSortGUI(QMainWindow):
         if not theme_icon.isNull():
             self.setWindowIcon(theme_icon)
         else:
-            icon_path = os.path.join(icon_dir, "logo.png")
-            if os.path.exists(icon_path):
-                self.setWindowIcon(QIcon(icon_path))
+            icon_path = Path(icon_dir) / "logo.png"
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
         
         # Initialize Core
-        self.config = ConfigManager(config_path="config/config.json", default_path="config/default_config.json")
+        self.config = ConfigManager()
         self.logger = SmartSortLogger()
         self.organizer = FileOrganizer(self.config, self.logger)
+        from src.utils.autostart import AutostartManager
+        self.autostart_manager = AutostartManager(self.logger)
         self.threadpool = QThreadPool()
         
         self.stats = {"processed": 0, "duplicates": 0, "errors": 0}
@@ -116,6 +118,9 @@ class SmartSortGUI(QMainWindow):
         
         if self.tray_available:
             QTimer.singleShot(2000, self.finish_startup)
+            
+        # Run startup verification and repair check on launch
+        QTimer.singleShot(1000, self.verify_and_repair_startup_config)
 
     def setup_system_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -192,11 +197,9 @@ class SmartSortGUI(QMainWindow):
         msg.setWindowTitle("About SmartSort")
         msg.setText("<b>SmartSort File Organizer</b><br>Version 2.0.0<br><br>An intelligent, rule-based daemon and GUI to organize your downloads folder automatically.")
         
-        current_file_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_file_dir))
-        logo_path = os.path.join(project_root, "assets", "icons", "logo.png")
-        if os.path.exists(logo_path):
-            pixmap = QPixmap(logo_path)
+        logo_path = AppPaths.resource_dir() / "icons" / "logo.png"
+        if logo_path.is_file():
+            pixmap = QPixmap(str(logo_path))
             scaled = pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             msg.setIconPixmap(scaled)
             
@@ -238,9 +241,12 @@ class SmartSortGUI(QMainWindow):
         )
 
     def open_reports_folder(self):
-        reports_dir = os.path.abspath("reports")
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(current_file_dir))
+        reports_dir = os.path.join(project_root, "reports")
         import subprocess
         try:
+            os.makedirs(reports_dir, exist_ok=True)
             subprocess.run(["xdg-open", reports_dir], check=False, timeout=2.0)
         except Exception as e:
             self.logger.error(f"Failed to open reports folder: {e}")
@@ -285,6 +291,8 @@ class SmartSortGUI(QMainWindow):
             QWidget {
                 background-color: #1e1e1e;
                 color: #e0e0e0;
+                font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+                font-size: 13px;
             }
             QMainWindow {
                 background-color: #1a1a1a;
@@ -297,18 +305,23 @@ class SmartSortGUI(QMainWindow):
             QTabBar::tab {
                 background-color: #2b2b2b;
                 color: #b0b0b0;
-                padding: 8px 16px;
+                padding: 10px 20px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
-                margin-right: 2px;
+                margin-right: 4px;
                 border: 1px solid #303030;
                 border-bottom: none;
+                font-weight: 500;
+            }
+            QTabBar::tab:hover {
+                background-color: #353535;
+                color: #ffffff;
             }
             QTabBar::tab:selected {
                 background-color: #1e1e1e;
                 color: #ffffff;
                 font-weight: bold;
-                border-bottom: 1px solid #1e1e1e;
+                border-bottom: 2px solid #3584e4;
             }
             QFrame {
                 background-color: transparent;
@@ -316,29 +329,68 @@ class SmartSortGUI(QMainWindow):
             QFrame.Card {
                 background-color: #262626;
                 border: 1px solid #333333;
-                border-radius: 8px;
-                padding: 10px;
+                border-radius: 12px;
+                padding: 12px;
+            }
+            QFrame.Card:hover {
+                border-color: #3584e4;
+                background-color: #2d2d2d;
             }
             QLabel {
                 background-color: transparent;
                 color: #e0e0e0;
             }
+            QLabel#card_title {
+                font-size: 11px;
+                font-weight: bold;
+                color: #909090;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            QLabel#card_value {
+                font-size: 18px;
+                font-weight: bold;
+                color: #ffffff;
+            }
             QCheckBox, QRadioButton {
                 background-color: transparent;
                 color: #e0e0e0;
+                spacing: 8px;
+            }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                background-color: #2b2b2b;
+            }
+            QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+                border-color: #3584e4;
+                background-color: #323232;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #3584e4;
+                border-color: #3584e4;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path fill='%23ffffff' d='M14.8 5.3L8.1 12 5.2 9.1c-.4-.4-1-.4-1.4 0s-.4 1 0 1.4l3.5 3.5c.2.2.4.3.7.3.3 0 .5-.1.7-.3l7.4-7.4c.4-.4.4-1 0-1.4s-1-.4-1.4 0z'/></svg>");
+            }
+            QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {
+                background-color: #1b6acb;
+                border-color: #1b6acb;
             }
             QGroupBox {
                 border: 1px solid #333333;
-                border-radius: 6px;
-                margin-top: 12px;
+                border-radius: 8px;
+                margin-top: 16px;
                 font-weight: bold;
                 color: #ffffff;
                 background-color: #242424;
+                padding-top: 16px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
+                subcontrol-position: top left;
+                left: 15px;
+                padding: 0 5px 0 5px;
                 background-color: #1e1e1e;
             }
             QScrollArea {
@@ -355,7 +407,7 @@ class SmartSortGUI(QMainWindow):
                 background-color: #181818;
                 border: 1px solid #333333;
                 border-radius: 6px;
-                padding: 6px;
+                padding: 8px;
                 color: #e0e0e0;
             }
             QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
@@ -364,8 +416,9 @@ class SmartSortGUI(QMainWindow):
             QHeaderView::section {
                 background-color: #262626;
                 color: #e0e0e0;
-                padding: 4px;
+                padding: 6px;
                 border: 1px solid #303030;
+                font-weight: bold;
             }
             QTableCornerButton::section {
                 background-color: #262626;
@@ -379,15 +432,21 @@ class SmartSortGUI(QMainWindow):
                 background-color: #2a2a2a;
                 border: 1px solid #3a3a3a;
                 border-radius: 6px;
-                padding: 6px 12px;
+                padding: 8px 16px;
                 color: #e0e0e0;
+                font-weight: 500;
             }
             QPushButton:hover {
                 background-color: #353535;
-                border: 1px solid #4a4a4a;
+                border-color: #4a4a4a;
             }
             QPushButton:pressed {
                 background-color: #404040;
+            }
+            QPushButton:disabled {
+                background-color: #1e1e1e;
+                color: #666666;
+                border-color: #2a2a2a;
             }
             QPushButton#primary {
                 background-color: #3584e4;
@@ -406,12 +465,50 @@ class SmartSortGUI(QMainWindow):
                 padding: 2px 4px;
                 border-radius: 4px;
             }
+            QScrollBar:vertical {
+                border: none;
+                background: #181818;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #3e3e3e;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #555555;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+            }
+            QScrollBar:horizontal {
+                border: none;
+                background: #181818;
+                height: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #3e3e3e;
+                min-width: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #555555;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: none;
+            }
             """
         else:
             qss = """
             QWidget {
                 background-color: #f6f5f4;
                 color: #2e3436;
+                font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+                font-size: 13px;
             }
             QMainWindow {
                 background-color: #f6f5f4;
@@ -423,19 +520,24 @@ class SmartSortGUI(QMainWindow):
             }
             QTabBar::tab {
                 background-color: #e1dedb;
-                color: #2e3436;
-                padding: 8px 16px;
+                color: #505050;
+                padding: 10px 20px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
-                margin-right: 2px;
+                margin-right: 4px;
                 border: 1px solid #e1dedb;
                 border-bottom: none;
+                font-weight: 500;
+            }
+            QTabBar::tab:hover {
+                background-color: #eae7e4;
+                color: #2e3436;
             }
             QTabBar::tab:selected {
                 background-color: #ffffff;
                 color: #2e3436;
                 font-weight: bold;
-                border-bottom: 1px solid #ffffff;
+                border-bottom: 2px solid #3584e4;
             }
             QFrame {
                 background-color: transparent;
@@ -443,29 +545,72 @@ class SmartSortGUI(QMainWindow):
             QFrame.Card {
                 background-color: #ffffff;
                 border: 1px solid #e1dedb;
-                border-radius: 8px;
-                padding: 10px;
+                border-radius: 12px;
+                padding: 12px;
+            }
+            QFrame.Card:hover {
+                border-color: #3584e4;
+                background-color: #faf9f9;
             }
             QLabel {
                 background-color: transparent;
                 color: #2e3436;
             }
+            QLabel#card_title {
+                font-size: 11px;
+                font-weight: bold;
+                color: #777777;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            QLabel#card_value {
+                font-size: 18px;
+                font-weight: bold;
+                color: #2e3436;
+            }
             QCheckBox, QRadioButton {
                 background-color: transparent;
                 color: #2e3436;
+                spacing: 8px;
+            }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border: 1px solid #c0bab4;
+                border-radius: 4px;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+                border-color: #3584e4;
+                background-color: #f6f5f4;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #3584e4;
+                border-color: #3584e4;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path fill='%23ffffff' d='M14.8 5.3L8.1 12 5.2 9.1c-.4-.4-1-.4-1.4 0s-.4 1 0 1.4l3.5 3.5c.2.2.4.3.7.3.3 0 .5-.1.7-.3l7.4-7.4c.4-.4.4-1 0-1.4s-1-.4-1.4 0z'/></svg>");
+            }
+            QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {
+                background-color: #1b6acb;
+                border-color: #1b6acb;
             }
             QPushButton {
                 background-color: #e1dedb;
                 border: 1px solid #c0bab4;
                 border-radius: 6px;
-                padding: 6px 12px;
+                padding: 8px 16px;
                 color: #2e3436;
+                font-weight: 500;
             }
             QPushButton:hover {
                 background-color: #d5d1cc;
             }
             QPushButton:pressed {
                 background-color: #c0bab4;
+            }
+            QPushButton:disabled {
+                background-color: #f6f5f4;
+                color: #888888;
+                border-color: #e1dedb;
             }
             QPushButton#primary {
                 background-color: #3584e4;
@@ -482,7 +627,7 @@ class SmartSortGUI(QMainWindow):
                 background-color: #ffffff;
                 border: 1px solid #e1dedb;
                 border-radius: 6px;
-                padding: 4px;
+                padding: 8px;
                 color: #2e3436;
             }
             QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
@@ -490,16 +635,18 @@ class SmartSortGUI(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #e1dedb;
-                border-radius: 6px;
-                margin-top: 12px;
+                border-radius: 8px;
+                margin-top: 16px;
                 font-weight: bold;
                 color: #2e3436;
                 background-color: #ffffff;
+                padding-top: 16px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
+                subcontrol-position: top left;
+                left: 15px;
+                padding: 0 5px 0 5px;
                 background-color: #f6f5f4;
             }
             QScrollArea {
@@ -515,8 +662,9 @@ class SmartSortGUI(QMainWindow):
             QHeaderView::section {
                 background-color: #e1dedb;
                 color: #2e3436;
-                padding: 4px;
+                padding: 6px;
                 border: 1px solid #c0bab4;
+                font-weight: bold;
             }
             QTableCornerButton::section {
                 background-color: #e1dedb;
@@ -527,6 +675,42 @@ class SmartSortGUI(QMainWindow):
                 color: #2e3436;
                 padding: 2px 4px;
                 border-radius: 4px;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f6f5f4;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0bab4;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a09a94;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+            }
+            QScrollBar:horizontal {
+                border: none;
+                background: #f6f5f4;
+                height: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #c0bab4;
+                min-width: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #a09a94;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: none;
             }
             """
         self.setStyleSheet(qss)
@@ -539,10 +723,13 @@ class SmartSortGUI(QMainWindow):
         card.setFrameShape(QFrame.Shape.StyledPanel)
         
         layout = QVBoxLayout(card)
+        layout.setSpacing(4)
+        layout.setContentsMargins(12, 12, 12, 12)
+        
         lbl_title = QLabel(title)
-        lbl_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #777777;")
+        lbl_title.setObjectName("card_title")
         lbl_val = QLabel(val)
-        lbl_val.setStyleSheet("font-size: 16px; font-weight: bold;")
+        lbl_val.setObjectName("card_value")
         
         layout.addWidget(lbl_title)
         layout.addWidget(lbl_val)
@@ -577,8 +764,56 @@ class SmartSortGUI(QMainWindow):
         self.lbl_activity_val.setText(getattr(self, "last_activity_time", "Never"))
         
         if hasattr(self, "lbl_service_control_status"):
-            self.lbl_service_control_status.setText(f"Service status: {svc_status}")
+            pkg_type = detect_package_type()
+            if pkg_type == PackageType.FLATPAK:
+                self.lbl_service_control_status.setText("Background Service: Unavailable")
+            else:
+                self.lbl_service_control_status.setText(f"Service status: {svc_status}")
             
+        pkg_type = detect_package_type()
+        if pkg_type == PackageType.APPIMAGE:
+            if hasattr(self, "btn_install_service") and hasattr(self, "btn_update_service") and hasattr(self, "btn_remove_service"):
+                if svc_status == "Not Installed":
+                    self.btn_install_service.setEnabled(True)
+                    self.btn_update_service.setEnabled(False)
+                    self.btn_remove_service.setEnabled(False)
+                else:
+                    self.btn_install_service.setEnabled(False)
+                    self.btn_update_service.setEnabled(True)
+                    self.btn_remove_service.setEnabled(True)
+        elif pkg_type != PackageType.FLATPAK:
+            if hasattr(self, "btn_install_service"):
+                if svc_status == "Not Installed":
+                    self.btn_install_service.setEnabled(True)
+                    self.btn_remove_service.setEnabled(False)
+                    self.btn_start_service.setEnabled(False)
+                    self.btn_stop_service.setEnabled(False)
+                    self.btn_restart_service.setEnabled(False)
+                    self.btn_enable_service.setEnabled(False)
+                    self.btn_disable_service.setEnabled(False)
+                else:
+                    self.btn_install_service.setEnabled(False)
+                    self.btn_remove_service.setEnabled(True)
+                    self.btn_start_service.setEnabled(svc_status != "Running")
+                    self.btn_stop_service.setEnabled(svc_status == "Running")
+                    self.btn_restart_service.setEnabled(svc_status == "Running")
+                    
+                    # To determine enable/disable button state:
+                    # check systemctl is-enabled
+                    is_enabled_now = False
+                    try:
+                        import subprocess
+                        res_enabled = subprocess.run(
+                            ["systemctl", "--user", "is-enabled", "smartsort.service"],
+                            capture_output=True, text=True, check=False, timeout=2.0
+                        )
+                        is_enabled_now = (res_enabled.stdout.strip() == "enabled")
+                    except Exception:
+                        is_enabled_now = (svc_status == "Stopped")
+                        
+                    self.btn_enable_service.setEnabled(not is_enabled_now)
+                    self.btn_disable_service.setEnabled(is_enabled_now)
+                
         from src.gui.tray_manager import TrayState
         if self.tray_available and self.tray_manager.current_state in [TrayState.IDLE, TrayState.PAUSED, TrayState.ERROR]:
             if getattr(self, "monitoring_active", True):
@@ -586,23 +821,94 @@ class SmartSortGUI(QMainWindow):
             else:
                 self.tray_manager.set_paused(self.stats.get("processed", 0), active_rules)
 
+    def verify_and_repair_startup_config(self):
+        # 1. Verify autostart desktop entry
+        autostart_expected = bool(self.config.get("autostart", False))
+        pkg_type = detect_package_type()
+        
+        # Check if AppImage has moved for autostart
+        if pkg_type == PackageType.APPIMAGE:
+            if hasattr(self, "autostart_manager"):
+                autostart_moved, current_app_path, old_app_path = self.autostart_manager.check_appimage_moved()
+                if autostart_moved:
+                    reply = QMessageBox.question(
+                        self,
+                        "AppImage Path Changed (Autostart)",
+                        f"The AppImage has moved from:\n{old_app_path}\n\nto:\n{current_app_path}\n\nUpdate automatic startup (autostart) configuration?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        if self.autostart_manager.enable_autostart():
+                            self.show_notification("SmartSort Autostart", "Autostart path updated successfully.")
+                        else:
+                            QMessageBox.critical(self, "Error", "Failed to update autostart path.")
+
+        # Verify autostart entry presence and validity (missing or corrupted)
+        if autostart_expected and hasattr(self, "autostart_manager"):
+            desktop_file_exists = self.autostart_manager.desktop_file.exists()
+            corrupted = False
+            if desktop_file_exists:
+                try:
+                    content = self.autostart_manager.desktop_file.read_text()
+                    expected_cmd = self.autostart_manager.get_command()
+                    if "Name=SmartSort" not in content or "Exec=" not in content:
+                        corrupted = True
+                    else:
+                        exec_line = ""
+                        for line in content.splitlines():
+                            if line.strip().startswith("Exec="):
+                                exec_line = line.split("=", 1)[1].strip()
+                        if exec_line != expected_cmd:
+                            corrupted = True
+                except Exception:
+                    corrupted = True
+
+            if not desktop_file_exists or corrupted:
+                reason = "missing" if not desktop_file_exists else "corrupted"
+                reply = QMessageBox.question(
+                    self,
+                    "Startup Entry Repair",
+                    f"SmartSort detected that the automatic startup entry is {reason}.\n\nWould you like to repair it now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    if self.autostart_manager.enable_autostart():
+                        self.show_notification("SmartSort Startup Repair", "Startup entry successfully repaired.")
+                    else:
+                        QMessageBox.critical(self, "Error", "Failed to repair startup entry.")
+
+        # 2. Verify systemd background service (only for non-Flatpak)
+        if pkg_type != PackageType.FLATPAK:
+            # Check if AppImage has moved for systemd service
+            has_moved, current_path, service_path = check_appimage_moved()
+            if has_moved:
+                reply = QMessageBox.question(
+                    self,
+                    "AppImage Location Changed (Service)",
+                    f"The AppImage has moved from:\n{service_path}\n\nto:\n{current_path}\n\nUpdate background service?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.install_service()
+
     def get_service_status(self) -> str:
+        pkg_type = detect_package_type()
+        if pkg_type == PackageType.FLATPAK:
+            return "Unavailable"
+            
         from pathlib import Path
         import subprocess
         service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
         try:
-            # Query if enabled
             res_enabled = subprocess.run(
                 ["systemctl", "--user", "is-enabled", "smartsort.service"],
                 capture_output=True, text=True, check=False, timeout=2.0
             )
             enabled_out = res_enabled.stdout.strip()
             
-            # Check if not installed
             if not service_file.exists() and (enabled_out == "not-found" or "No such file" in res_enabled.stderr or res_enabled.returncode == 4):
                 return "Not Installed"
                 
-            # Check if active/running
             res_active = subprocess.run(
                 ["systemctl", "--user", "is-active", "smartsort.service"],
                 capture_output=True, text=True, check=False, timeout=2.0
@@ -611,6 +917,8 @@ class SmartSortGUI(QMainWindow):
             
             if active_out == "active":
                 return "Running"
+            elif pkg_type == PackageType.APPIMAGE:
+                return "Installed"
             elif enabled_out == "enabled":
                 return "Stopped"
             else:
@@ -618,17 +926,42 @@ class SmartSortGUI(QMainWindow):
         except Exception:
             if not service_file.exists():
                 return "Not Installed"
+            if pkg_type == PackageType.APPIMAGE:
+                return "Installed"
             return "Stopped"
 
     def install_service(self):
+        pkg_type = detect_package_type()
+        if pkg_type == PackageType.FLATPAK:
+            return
+            
         from pathlib import Path
+        import os
         try:
             service_dir = Path.home() / ".config" / "systemd" / "user"
             service_dir.mkdir(parents=True, exist_ok=True)
             service_file = service_dir / "smartsort.service"
             
-            main_path = Path(sys.argv[0]).resolve()
-            content = f"""[Unit]
+            if pkg_type == PackageType.APPIMAGE:
+                appimage_path = os.environ.get("APPIMAGE")
+                if not appimage_path:
+                    appimage_path = Path(sys.argv[0]).resolve()
+                
+                content = f"""[Unit]
+Description=SmartSort File Organizer Service (AppImage)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={appimage_path} --daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+"""
+            else:
+                main_path = Path(sys.argv[0]).resolve()
+                content = f"""[Unit]
 Description=SmartSort File Organizer Service
 After=network.target
 
@@ -646,13 +979,54 @@ WantedBy=default.target
             import subprocess
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=2.0)
             subprocess.run(["systemctl", "--user", "enable", "smartsort.service"], check=True, timeout=2.0)
+            subprocess.run(["systemctl", "--user", "start", "smartsort.service"], check=True, timeout=2.0)
             
-            self.logger.info("Systemd user service installed and enabled successfully.")
+            self.logger.info("Systemd user service installed, enabled, and started successfully.")
             self.update_dashboard_stats()
-            QMessageBox.information(self, "Success", "Systemd user service installed and enabled successfully.")
+            QMessageBox.information(self, "Success", "Systemd user service installed, enabled, and started successfully.")
         except Exception as e:
             self.logger.error(f"Failed to install systemd service: {e}")
             QMessageBox.critical(self, "Error", f"Failed to install systemd service: {str(e)}")
+
+    def enable_service(self):
+        import subprocess
+        try:
+            subprocess.run(["systemctl", "--user", "enable", "smartsort.service"], check=True, timeout=2.0)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=2.0)
+            self.logger.info("Systemd user service enabled successfully.")
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd user service enabled successfully.")
+        except Exception as e:
+            self.logger.error(f"Failed to enable systemd service: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to enable systemd service: {str(e)}")
+
+    def disable_service(self):
+        import subprocess
+        try:
+            res_active = subprocess.run(
+                ["systemctl", "--user", "is-active", "smartsort.service"],
+                capture_output=True, text=True, check=False, timeout=2.0
+            )
+            if res_active.stdout.strip() == "active":
+                subprocess.run(["systemctl", "--user", "stop", "smartsort.service"], check=True, timeout=2.0)
+            
+            subprocess.run(["systemctl", "--user", "disable", "smartsort.service"], check=True, timeout=2.0)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=2.0)
+            self.logger.info("Systemd user service disabled successfully.")
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd user service disabled successfully.")
+        except Exception as e:
+            self.logger.error(f"Failed to disable systemd service: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to disable systemd service: {str(e)}")
+
+    def toggle_install_or_enable_service(self):
+        status = self.get_service_status()
+        if status == "Not Installed":
+            self.install_service()
+        elif status == "Disabled":
+            self.enable_service()
+        else:
+            self.disable_service()
 
     def start_service(self):
         import subprocess
@@ -681,37 +1055,67 @@ WantedBy=default.target
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to restart service: {str(e)}")
 
-    def update_autostart_setting(self, enabled: bool):
+    def update_appimage_service(self):
+        self.install_service()
+
+    def remove_appimage_service(self):
+        import subprocess
         from pathlib import Path
-        autostart_dir = Path.home() / ".config" / "autostart"
-        autostart_file = autostart_dir / "smartsort.desktop"
-        
+        try:
+            subprocess.run(["systemctl", "--user", "stop", "smartsort.service"], check=False, timeout=2.0)
+            subprocess.run(["systemctl", "--user", "disable", "smartsort.service"], check=False, timeout=2.0)
+            service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
+            if service_file.exists():
+                service_file.unlink()
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=2.0)
+            
+            self.logger.info("Systemd user service removed successfully.")
+            self.update_dashboard_stats()
+            QMessageBox.information(self, "Success", "Systemd user service removed successfully.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove systemd service: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to remove systemd service: {str(e)}")
+
+    def update_autostart_setting(self, enabled: bool):
+        if not hasattr(self, "autostart_manager"):
+            from src.utils.autostart import AutostartManager
+            self.autostart_manager = AutostartManager(self.logger)
         if enabled:
-            try:
-                autostart_dir.mkdir(parents=True, exist_ok=True)
-                main_path = Path(sys.argv[0]).resolve()
-                content = f"""[Desktop Entry]
-Type=Application
-Exec={sys.executable} {main_path} --service
-Path={main_path.parent}
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Name=SmartSort
-Comment=SmartSort File Organizer Background Service
-Icon={main_path.parent}/assets/icons/logo.png
-"""
-                autostart_file.write_text(content)
-                self.logger.info(f"Autostart entry created at {autostart_file}")
-            except Exception as e:
-                self.logger.error(f"Failed to create autostart entry: {e}")
+            self.autostart_manager.enable_autostart()
         else:
-            if autostart_file.exists():
-                try:
-                    autostart_file.unlink()
-                    self.logger.info(f"Autostart entry removed from {autostart_file}")
-                except Exception as e:
-                    self.logger.error(f"Failed to remove autostart entry: {e}")
+            self.autostart_manager.disable_autostart()
+
+    def on_autostart_clicked(self, checked: bool):
+        if not hasattr(self, "autostart_manager"):
+            from src.utils.autostart import AutostartManager
+            self.autostart_manager = AutostartManager(self.logger)
+        if checked:
+            success = self.autostart_manager.enable_autostart()
+            if success:
+                self.config.set("autostart", True)
+                self.show_notification("SmartSort Startup", "SmartSort will start automatically when you log in.")
+            else:
+                self.chk_autostart.setChecked(False)
+                self.config.set("autostart", False)
+                self.show_notification("SmartSort Error", "Failed to enable automatic startup.")
+                QMessageBox.critical(self, "Error", "Failed to enable automatic startup.")
+        else:
+            success = self.autostart_manager.disable_autostart()
+            if success:
+                self.config.set("autostart", False)
+                self.show_notification("SmartSort Startup", "Automatic startup disabled.")
+            else:
+                self.chk_autostart.setChecked(True)
+                self.config.set("autostart", True)
+                self.show_notification("SmartSort Error", "Failed to disable automatic startup.")
+                QMessageBox.critical(self, "Error", "Failed to disable automatic startup.")
+
+    def on_start_minimized_clicked(self, checked: bool):
+        self.config.set("start_minimized", checked)
+        if checked:
+            self.show_notification("SmartSort Startup", "SmartSort will start minimized to the system tray.")
+        else:
+            self.show_notification("SmartSort Startup", "SmartSort will start with the dashboard visible.")
 
     def changeEvent(self, event):
         if event.type() == QEvent.Type.WindowStateChange:
@@ -728,13 +1132,16 @@ Icon={main_path.parent}/assets/icons/logo.png
         if not getattr(self, "really_exit", False):
             event.ignore()
             self.hide()
-            if getattr(self, "notifications_enabled", False):
-                try:
-                    import notify2
-                    n = notify2.Notification("SmartSort", "SmartSort is still running in the system tray.")
-                    n.show()
-                except Exception:
-                    pass
+            if hasattr(self, "show_notification"):
+                self.show_notification("SmartSort", "SmartSort is still running in the system tray.")
+            else:
+                if getattr(self, "notifications_enabled", False):
+                    try:
+                        import notify2
+                        n = notify2.Notification("SmartSort", "SmartSort is still running in the system tray.")
+                        n.show()
+                    except Exception:
+                        pass
         else:
             if hasattr(self, "monitor_thread"):
                 try:
@@ -745,12 +1152,15 @@ Icon={main_path.parent}/assets/icons/logo.png
 
     def init_notification_system(self):
         self.notifications_enabled = False
-        try:
-            import notify2
-            notify2.init("SmartSort")
+        if detect_package_type() == PackageType.FLATPAK:
             self.notifications_enabled = True
-        except Exception as e:
-            print(f"Notifications disabled: {e}")
+        else:
+            try:
+                import notify2
+                notify2.init("SmartSort")
+                self.notifications_enabled = True
+            except Exception:
+                pass
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -777,9 +1187,21 @@ Icon={main_path.parent}/assets/icons/logo.png
     def setup_dashboard(self):
         from PyQt6.QtWidgets import QFrame, QGridLayout
         main_layout = QVBoxLayout()
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header layout
+        header_layout = QHBoxLayout()
+        lbl_header = QLabel("SmartSort Dashboard")
+        lbl_header.setObjectName("dashboard_header_title")
+        lbl_header.setStyleSheet("font-size: 20px; font-weight: bold;")
+        header_layout.addWidget(lbl_header)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
         
         # Grid of cards
         grid_layout = QGridLayout()
+        grid_layout.setSpacing(12)
         
         self.card_processed, self.lbl_processed_val = self.create_card("Files Processed", "0")
         self.card_duplicates, self.lbl_duplicates_val = self.create_card("Duplicates Skipped", "0")
@@ -799,44 +1221,75 @@ Icon={main_path.parent}/assets/icons/logo.png
         
         main_layout.addLayout(grid_layout)
         
-        # Status label
+        # Status layout
+        status_card = QFrame()
+        status_card.setProperty("class", "Card")
+        status_layout = QHBoxLayout(status_card)
+        status_layout.setContentsMargins(12, 10, 12, 10)
         self.lbl_status = QLabel("Status: Monitoring Downloads...")
-        self.lbl_status.setStyleSheet("font-weight: bold; margin-top: 10px;")
-        main_layout.addWidget(self.lbl_status)
+        self.lbl_status.setStyleSheet("font-weight: bold; font-size: 13px;")
+        status_layout.addWidget(self.lbl_status)
+        status_layout.addStretch()
+        main_layout.addWidget(status_card)
         
         # Log display
+        main_layout.addWidget(QLabel("Recent Activity (Daemon Logs):"))
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
-        main_layout.addWidget(QLabel("Recent Activity:"))
+        self.log_display.setStyleSheet("font-family: 'Courier New', monospace; font-size: 11px;")
         main_layout.addWidget(self.log_display)
         
         self.tab_dashboard.setLayout(main_layout)
 
     def setup_logs(self):
         layout = QVBoxLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header
+        lbl_header = QLabel("Operation History")
+        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(lbl_header)
+        
+        # Table of logs
         self.table_logs = QTableWidget(0, 5)
         self.table_logs.setHorizontalHeaderLabels(["Timestamp", "File", "Action", "Result", "Message"])
+        self.table_logs.setAlternatingRowColors(True)
+        self.table_logs.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_logs.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_logs.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table_logs)
         
+        # Buttons layout
+        btn_layout = QHBoxLayout()
         btn_refresh = QPushButton("Refresh Logs")
+        btn_refresh.setObjectName("primary")
         btn_refresh.clicked.connect(self.refresh_logs)
-        layout.addWidget(btn_refresh)
+        btn_layout.addWidget(btn_refresh)
+        btn_layout.addStretch()
         
+        layout.addLayout(btn_layout)
         self.tab_logs.setLayout(layout)
 
     def setup_rules(self):
         layout = QHBoxLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
         
         # Table of rules
         self.table_rules = QTableWidget(0, 4)
         self.table_rules.setHorizontalHeaderLabels(["Name", "Priority", "Enabled", "Destination"])
+        self.table_rules.setAlternatingRowColors(True)
         self.table_rules.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_rules.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_rules.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table_rules)
         
         # Buttons layout
         btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(8)
         self.btn_add_rule = QPushButton("Add")
+        self.btn_add_rule.setObjectName("primary")
         self.btn_edit_rule = QPushButton("Edit")
         self.btn_delete_rule = QPushButton("Delete")
         self.btn_move_up = QPushButton("Move Up")
@@ -855,8 +1308,23 @@ Icon={main_path.parent}/assets/icons/logo.png
         btn_layout.addWidget(self.btn_add_rule)
         btn_layout.addWidget(self.btn_edit_rule)
         btn_layout.addWidget(self.btn_delete_rule)
+        
+        # Add a subtle line separator for rule management vs order
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setFrameShadow(QFrame.Shadow.Sunken)
+        sep1.setStyleSheet("background-color: #333333;" if self.config.get("theme", "system") == "dark" else "background-color: #e1dedb;")
+        btn_layout.addWidget(sep1)
+        
         btn_layout.addWidget(self.btn_move_up)
         btn_layout.addWidget(self.btn_move_down)
+        
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        sep2.setStyleSheet("background-color: #333333;" if self.config.get("theme", "system") == "dark" else "background-color: #e1dedb;")
+        btn_layout.addWidget(sep2)
+        
         btn_layout.addWidget(self.btn_enable_rule)
         btn_layout.addWidget(self.btn_disable_rule)
         btn_layout.addStretch()
@@ -905,15 +1373,23 @@ Icon={main_path.parent}/assets/icons/logo.png
         
         layout = QVBoxLayout(container)
         
-        # 1. General Group
-        group_general = QGroupBox("General Settings")
+        # 1. Application Startup Group
+        group_general = QGroupBox("Application Startup")
         gen_layout = QVBoxLayout(group_general)
         
-        self.chk_autostart = QCheckBox("Start SmartSort Automatically at Login")
-        self.chk_autostart.setChecked(bool(self.config.get("autostart", False)))
+        from src.utils.autostart import AutostartManager
+        if not hasattr(self, "autostart_manager"):
+            self.autostart_manager = AutostartManager(self.logger)
+        actual_autostart = self.autostart_manager.is_autostart_enabled()
+        self.chk_autostart = QCheckBox("Start SmartSort automatically when I log in")
+        self.chk_autostart.setChecked(actual_autostart)
+        if self.config.get("autostart") != actual_autostart:
+            self.config.set("autostart", actual_autostart)
+        self.chk_autostart.clicked.connect(self.on_autostart_clicked)
         
-        self.chk_start_minimized = QCheckBox("Start SmartSort Minimized (to Tray)")
+        self.chk_start_minimized = QCheckBox("Start minimized to tray")
         self.chk_start_minimized.setChecked(bool(self.config.get("start_minimized", False)))
+        self.chk_start_minimized.clicked.connect(self.on_start_minimized_clicked)
         
         h_theme = QHBoxLayout()
         h_theme.addWidget(QLabel("Application Theme:"))
@@ -969,30 +1445,88 @@ Icon={main_path.parent}/assets/icons/logo.png
         notif_layout.addWidget(self.chk_notif)
         layout.addWidget(group_notif)
         
-        # 4. Service Group
-        group_service = QGroupBox("Background Service Controls (Systemd)")
+        # 4. Background Monitoring Group
+        group_service = QGroupBox("Background Monitoring")
         svc_layout = QVBoxLayout(group_service)
         
         self.lbl_service_control_status = QLabel("Service status: Checking...")
         self.lbl_service_control_status.setStyleSheet("font-weight: bold;")
         svc_layout.addWidget(self.lbl_service_control_status)
         
-        h_svc_btns = QHBoxLayout()
-        btn_inst_svc = QPushButton("Install Service")
-        btn_inst_svc.clicked.connect(self.install_service)
-        btn_start_svc = QPushButton("Start Service")
-        btn_start_svc.clicked.connect(self.start_service)
-        btn_stop_svc = QPushButton("Stop Service")
-        btn_stop_svc.clicked.connect(self.stop_service)
-        btn_restart_svc = QPushButton("Restart Service")
-        btn_restart_svc.clicked.connect(self.restart_service)
+        # Create all buttons
+        self.btn_install_service = QPushButton("Install Service")
+        self.btn_remove_service = QPushButton("Remove Service")
+        self.btn_update_service = QPushButton("Update Service")
+        self.btn_start_service = QPushButton("Start")
+        self.btn_stop_service = QPushButton("Stop")
+        self.btn_restart_service = QPushButton("Restart")
+        self.btn_enable_service = QPushButton("Enable")
+        self.btn_disable_service = QPushButton("Disable")
         
-        h_svc_btns.addWidget(btn_inst_svc)
-        h_svc_btns.addWidget(btn_start_svc)
-        h_svc_btns.addWidget(btn_stop_svc)
-        h_svc_btns.addWidget(btn_restart_svc)
-        svc_layout.addLayout(h_svc_btns)
+        # Connect click handlers
+        self.btn_install_service.clicked.connect(self.install_service)
+        self.btn_remove_service.clicked.connect(self.remove_appimage_service)
+        self.btn_update_service.clicked.connect(self.update_appimage_service)
+        self.btn_start_service.clicked.connect(self.start_service)
+        self.btn_stop_service.clicked.connect(self.stop_service)
+        self.btn_restart_service.clicked.connect(self.restart_service)
+        self.btn_enable_service.clicked.connect(self.enable_service)
+        self.btn_disable_service.clicked.connect(self.disable_service)
         
+        pkg_type = detect_package_type()
+        if pkg_type == PackageType.FLATPAK:
+            self.lbl_service_control_status.setText("Background Service: Unavailable")
+            self.lbl_service_info = QLabel("Background services are not available inside the Flatpak sandbox.")
+            self.lbl_service_info.setWordWrap(True)
+            self.lbl_service_info.setStyleSheet("color: #a0a0a0; font-style: italic;")
+            svc_layout.addWidget(self.lbl_service_info)
+            
+            # Hide all buttons
+            self.btn_install_service.setVisible(False)
+            self.btn_remove_service.setVisible(False)
+            self.btn_update_service.setVisible(False)
+            self.btn_start_service.setVisible(False)
+            self.btn_stop_service.setVisible(False)
+            self.btn_restart_service.setVisible(False)
+            self.btn_enable_service.setVisible(False)
+            self.btn_disable_service.setVisible(False)
+        elif pkg_type == PackageType.APPIMAGE:
+            self.btn_install_service.setText("Install Background Service")
+            self.btn_remove_service.setText("Remove")
+            self.btn_update_service.setText("Update")
+            
+            h_svc_btns = QHBoxLayout()
+            h_svc_btns.addWidget(self.btn_install_service)
+            h_svc_btns.addWidget(self.btn_update_service)
+            h_svc_btns.addWidget(self.btn_remove_service)
+            svc_layout.addLayout(h_svc_btns)
+            
+            # Hide non-AppImage buttons
+            self.btn_start_service.setVisible(False)
+            self.btn_stop_service.setVisible(False)
+            self.btn_restart_service.setVisible(False)
+            self.btn_enable_service.setVisible(False)
+            self.btn_disable_service.setVisible(False)
+        else: # DEBIAN / SOURCE
+            self.btn_install_service.setText("Install Service")
+            self.btn_remove_service.setText("Remove Service")
+            
+            h_row1 = QHBoxLayout()
+            h_row1.addWidget(self.btn_install_service)
+            h_row1.addWidget(self.btn_remove_service)
+            h_row1.addWidget(self.btn_enable_service)
+            h_row1.addWidget(self.btn_disable_service)
+            svc_layout.addLayout(h_row1)
+            
+            h_row2 = QHBoxLayout()
+            h_row2.addWidget(self.btn_start_service)
+            h_row2.addWidget(self.btn_stop_service)
+            h_row2.addWidget(self.btn_restart_service)
+            svc_layout.addLayout(h_row2)
+            
+            # Hide AppImage specific buttons
+            self.btn_update_service.setVisible(False)
+            
         layout.addWidget(group_service)
         
         # 5. Advanced Group
@@ -1223,7 +1757,19 @@ Icon={main_path.parent}/assets/icons/logo.png
 
     def setup_tester(self):
         layout = QVBoxLayout()
-        form = QFormLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header
+        lbl_header = QLabel("Rule Matching Tester")
+        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(lbl_header)
+        
+        # Input Form
+        form_widget = QWidget()
+        form_widget.setProperty("class", "Card")
+        form = QFormLayout(form_widget)
+        form.setSpacing(10)
         
         self.txt_test_filename = QLineEdit("wallpaper.jpg")
         self.txt_test_size = QLineEdit("1.2MB")
@@ -1235,19 +1781,23 @@ Icon={main_path.parent}/assets/icons/logo.png
         form.addRow("Filename:", self.txt_test_filename)
         form.addRow("File Size:", self.txt_test_size)
         form.addRow("Extension:", self.txt_test_ext)
-        
-        layout.addLayout(form)
+        layout.addWidget(form_widget)
         
         btn_test = QPushButton("Test Rule Matching")
+        btn_test.setObjectName("primary")
         btn_test.clicked.connect(self.run_rule_test)
         layout.addWidget(btn_test)
         
-        group = QGroupBox("Test Output")
+        group = QGroupBox("Test Results Output")
         g_layout = QFormLayout()
+        g_layout.setSpacing(10)
         
         self.lbl_test_match = QLabel("None")
+        self.lbl_test_match.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.lbl_test_priority = QLabel("N/A")
+        self.lbl_test_priority.setStyleSheet("font-weight: bold;")
         self.lbl_test_dest = QLabel("N/A")
+        self.lbl_test_dest.setStyleSheet("font-weight: bold;")
         
         g_layout.addRow("Matched Rule:", self.lbl_test_match)
         g_layout.addRow("Priority:", self.lbl_test_priority)
@@ -1296,7 +1846,7 @@ Icon={main_path.parent}/assets/icons/logo.png
         self.lbl_test_dest.setText(f"<code>{dest}</code>")
 
     def refresh_logs(self):
-        log_dir = "logs"
+        log_dir = self.logger.log_dir
         if not os.path.exists(log_dir):
             return
             
@@ -1432,12 +1982,40 @@ Icon={main_path.parent}/assets/icons/logo.png
     def show_notification(self, title, message):
         if not self.notifications_enabled:
             return
-        try:
-            import notify2
-            n = notify2.Notification(title, message)
-            n.show()
-        except:
-            pass
+        if detect_package_type() == PackageType.FLATPAK:
+            import subprocess
+            try:
+                # Use Desktop Notifications portal via gdbus call
+                res = subprocess.run([
+                    "gdbus", "call", "--session",
+                    "--dest", "org.freedesktop.portal.Desktop",
+                    "--object-path", "/org/freedesktop/portal/desktop",
+                    "--method", "org.freedesktop.portal.Notification.AddNotification",
+                    "",
+                    f"{{'title': <'{title}'>, 'body': <'{message}'>}}"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0)
+                if res.returncode == 0:
+                    return
+            except Exception:
+                pass
+            
+            # Fallback to tray message if gdbus fails
+            try:
+                if hasattr(self, "tray_manager") and self.tray_manager and self.tray_manager.tray_icon:
+                    self.tray_manager.tray_icon.showMessage(title, message)
+            except Exception:
+                pass
+        else:
+            try:
+                import notify2
+                n = notify2.Notification(title, message)
+                n.show()
+            except:
+                try:
+                    if hasattr(self, "tray_manager") and self.tray_manager and self.tray_manager.tray_icon:
+                        self.tray_manager.tray_icon.showMessage(title, message)
+                except Exception:
+                    pass
 
 class RuleDialog(QDialog):
     def __init__(self, parent=None, rule=None, existing_priorities=None):
@@ -1455,7 +2033,10 @@ class RuleDialog(QDialog):
             
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
         form = QFormLayout()
+        form.setSpacing(10)
         
         self.txt_name = QLineEdit()
         self.spin_priority = QSpinBox()

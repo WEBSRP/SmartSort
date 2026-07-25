@@ -47,17 +47,21 @@ Below are placeholders for the interface:
 
 ```
 SmartSort/
-├── config/              # Configuration files (config.json, default_config.json)
-├── logs/                # Daily execution action logs
-├── reports/             # System migration, test, and implementation reports
-├── src/                 # Application codebase
-│   ├── gui/             # PyQt6 windows, dialogs, and tester interface
-│   ├── rules/           # Rule engine models, conditions, and manager logic
-│   └── utils/           # Utilities (configuration loaders, SHA256 checkers, loggers)
-├── tests/               # Pytest automated test suites
-├── main.py              # Application main entry point
-├── smartsort.service    # systemd user service script
-└── README.md            # Project documentation
+├── assets/              # Static resources (app icons and logos)
+├── config/              # Configuration templates (config.default.json)
+├── packaging/           # Build & packaging manifests, metadata, and scripts
+│   ├── debian/          # Debian packaging files, control templates, and build_deb.sh
+│   ├── appimage/        # AppImage AppRun wrapper, appimagetool binary, and build_appimage.sh
+│   └── flatpak/         # Flatpak com.smartsort.SmartSort.yml manifest, wheels, and build_flatpak.sh
+├── reports/             # Technical reports, architecture audits, and verification logs
+├── src/                 # Application source tree (PyQt6 views, rule engine, helpers)
+│   ├── gui/             # Desktop dashboard windows and tester sandboxes
+│   ├── rules/           # Rule models, manager, and condition evaluation engine
+│   ├── utils/           # Configuration loaders, autostart manager, and loggers
+│   └── version.py       # Single source of truth version definition
+├── tests/               # Automated unit and integration test suites
+├── main.py              # Application startup and service daemon entry point
+└── README.md            # Codebase and developer documentation
 ```
 
 ---
@@ -124,28 +128,65 @@ SmartSort is designed for Linux systems. No path modifications are required afte
 
 SmartSort is available via native packages and universal formats.
 
+#### Package Comparison
+
+| Feature | Source | Debian | AppImage | Flatpak |
+| :--- | :---: | :---: | :---: | :---: |
+| **GUI** | ✓ | ✓ | ✓ | ✓ |
+| **Tray** | ✓ | ✓ | ✓ | ✓ |
+| **Notifications** | ✓ | ✓ | ✓ | ✓ |
+| **Downloads Monitor** | ✓ | ✓ | ✓ | ✓ |
+| **Background Service** | ✓ | ✓ | ✓ | — |
+| **Systemd Integration** | ✓ | ✓ | ✓ | — |
+| **Auto Start** | ✓ | ✓ | ✓ | ✓ |
+
+##### Flatpak Sandboxing Limitations
+Flatpak applications execute inside a secure, isolated sandbox. Because of this, the Flatpak container cannot directly query, register, start, or stop systemd services on the host system (access to host `systemctl` or writing files directly to host path `~/.config/systemd/` is forbidden). Instead, autostart integration for Flatpak is handled natively by the desktop environment using standard XDG autostart desktop entries, while daemonized background watchers can be run inside the sandbox.
+
 #### Debian / Ubuntu (.deb)
 ```bash
-sudo dpkg -i smartsort_0.5.0_all.deb
+sudo dpkg -i smartsort_1.0.0_all.deb
 sudo apt-get install -f # to install dependencies
 ```
-The DEB package installs the application launcher, desktop entry, system tray icons, and systemd user services automatically. To uninstall: `sudo dpkg -r smartsort`.
+The DEB package installs the application launcher, desktop entry, system tray icons, and the systemd user service file. To enable and start the user service after installation, you can either:
+* Open the SmartSort Dashboard, navigate to **Settings**, and click **Enable Service** (and then **Start Service**) under "Background Service Controls (Systemd)".
+* Or run the following commands in your user session terminal:
+  ```bash
+  systemctl --user daemon-reload
+  systemctl --user enable smartsort.service
+  systemctl --user start smartsort.service
+  ```
+To uninstall: `sudo dpkg -r smartsort`.
 
-#### Flatpak (com.smartsort.SmartSort)
+#### AppImage (Portable Release)
+We build a fully bundled, portable AppImage containing all Python dependencies. You can run it directly:
 ```bash
-flatpak install flathub com.smartsort.SmartSort
-flatpak run com.smartsort.SmartSort
+chmod +x SmartSort.AppImage
+./SmartSort.AppImage
+```
+To run in background/daemon mode:
+```bash
+./SmartSort.AppImage --daemon
 ```
 
-#### AppImage
+#### Flatpak (com.smartsort.SmartSort)
+We provide a standalone Flatpak bundle (`smartsort.flatpak`) built using the KDE runtime.
+To install the bundle locally:
 ```bash
-chmod +x SmartSort-x86_64.AppImage
-./SmartSort-x86_64.AppImage
+flatpak install --user smartsort.flatpak
+```
+To run the Flatpak application:
+```bash
+flatpak run com.smartsort.SmartSort
+```
+To run in background/daemon mode:
+```bash
+flatpak run com.smartsort.SmartSort --daemon
 ```
 
 #### Fedora / RHEL (.rpm)
 ```bash
-sudo dnf install smartsort-0.5.0-1.noarch.rpm
+sudo dnf install smartsort-1.0.0-1.noarch.rpm
 ```
 
 ### Manual Installation (From Source)
@@ -236,20 +277,17 @@ In daemon mode, the application runs entirely in the background, executing loggi
 
 ## Service & Startup Management
 
-SmartSort provides options to manage startup and execution directly from the GUI Settings panel:
+SmartSort provides options to manage startup and execution directly from the GUI Settings panel. The controls are organized into two distinct sections:
 
-### 1. Auto Start
-Toggle the **Start SmartSort Automatically at Login** checkbox. When enabled, this creates a standard Linux autostart desktop entry at `~/.config/autostart/smartsort.desktop`, launching SmartSort in service mode on desktop login.
+### 1. Application Startup
+Manage startup preferences directly using simple checkboxes:
+* **Start SmartSort automatically when I log in**: Toggling this immediately configures a standard Linux autostart desktop entry at `~/.config/autostart/smartsort.desktop` configured for your package runtime (Source, Debian, AppImage, or Flatpak). It also performs automatic startup verification and repair (e.g., if the AppImage moves, or the entry is missing/corrupted, it offers one-click repair).
+* **Start minimized to tray**: Toggling this starts the application hidden with only the system tray icon visible. The interactive dashboard will only open when explicitly requested.
 
-### 2. Start Minimized
-Toggle the **Start SmartSort Minimized (to Tray)** checkbox. When enabled, launching the application initializes the system tray icon directly without opening the dashboard window.
-
-### 3. Systemd User Service Controls
-The Settings panel includes GUI buttons to manage the background service at the OS level:
-* **Install Service**: Generates a portable, user-specific service script at `~/.config/systemd/user/smartsort.service` and registers it.
-* **Start Service**: Starts the background daemon via systemd.
-* **Stop Service**: Stops the active systemd service.
-* **Restart Service**: Restarts the systemd daemon.
+### 2. Background Monitoring
+This section provides full OS-level management of the systemd background daemon service (unavailable inside Flatpak sandbox):
+* **Debian & Source**: Includes granular buttons to **Install Service**, **Remove Service**, **Start**, **Stop**, **Restart**, **Enable**, and **Disable** the systemd service.
+* **AppImage**: Includes buttons to **Install Background Service**, **Remove**, and **Update** (repoints the service to the current AppImage location).
 
 ### 4. Terminal Command Line Instructions
 
@@ -287,17 +325,24 @@ You can also manage the SmartSort services directly from your terminal:
 
 ---
 
-## Configuration
+## Configuration & XDG Storage
 
-Settings are stored in `config/config.json` and are fully customizable in the GUI:
-* **Downloads folder**: Monitored path. Resolves `~/Downloads` dynamically to the current user's profile path.
-* **Start Minimized**: If enabled, starts hidden in the system tray.
-* **Autostart**: Automatically registers startup script.
-* **Theme**: Supports `System Theme`, `Dark Mode`, and `Light Mode`.
-* **Notifications**: Toggle DBus desktop notification alerts.
-* **Duplicate detection**: Performs SHA256 checksum checks to avoid duplicate writes.
-* **Conflict resolution**: Collision policy (`rename`, `overwrite`, `skip`).
-* **Large file threshold**: Warning size string (e.g. `2.5GB`, `500MB`).
+SmartSort fully complies with the XDG Base Directory Specification. All runtime and user-specific configuration, logs, and data are stored in XDG directories:
+
+*   **Configuration**: `~/.config/smartsort/config.json` (Customizable via `$XDG_CONFIG_HOME`)
+*   **Logs**: `~/.local/state/smartsort/logs/` (Customizable via `$XDG_STATE_HOME`)
+*   **Cache**: `~/.cache/smartsort/` (Customizable via `$XDG_CACHE_HOME`)
+*   **User Data**: `~/.local/share/smartsort/` (Customizable via `$XDG_DATA_HOME`)
+
+Settings are fully customizable in the GUI settings panel:
+*   **Downloads folder**: Monitored path. Resolves `~/Downloads` dynamically to the current user's profile path.
+*   **Start Minimized**: If enabled, starts hidden in the system tray.
+*   **Autostart**: Automatically registers startup script.
+*   **Theme**: Supports `System Theme`, `Dark Mode`, and `Light Mode`.
+*   **Notifications**: Toggle DBus desktop notification alerts.
+*   **Duplicate detection**: Performs SHA256 checksum checks to avoid duplicate writes.
+*   **Conflict resolution**: Collision policy (`rename`, `overwrite`, `skip`).
+*   **Large file threshold**: Warning size string (e.g. `2.5GB`, `500MB`).
 
 ---
 
@@ -413,6 +458,62 @@ The following enhancements are planned for future updates:
 
 ---
 
+## Build & Developer Guide
+
+### 1. Developer Workflow
+- **Coding**: Modify only files in `src/`, `main.py`, or `assets/`.
+- **Version Changes**: Update `src/version.py`. This acts as the single source of truth version definition.
+- **Local Run**: Execute the application locally via python3:
+  ```bash
+  python3 main.py
+  ```
+- **Local Testing**: Run automated unit and integration tests using pytest:
+  ```bash
+  python3 -m pytest tests/
+  ```
+
+### 2. Packaging & Release Workflow
+Every packaging format compiles dynamically from the active source tree into a clean output file. 
+
+#### A. Debian Package (.deb)
+Compile the `.deb` package containing maintainer scripts, binary launchers, and desktop files:
+```bash
+./packaging/debian/build_deb.sh
+```
+Outputs the package to `build/deb/smartsort_<version>_all.deb`.
+
+#### B. AppImage (.AppImage)
+Compile the standalone portable executable AppImage using `appimagetool`:
+```bash
+./packaging/appimage/build_appimage.sh
+```
+Outputs the package to `build/appimage/SmartSort-<version>-x86_64.AppImage`.
+
+#### C. Flatpak (.flatpak)
+Compile and bundle the sandbox package:
+```bash
+./packaging/flatpak/build_flatpak.sh
+```
+Outputs the package to: `build/flatpak/smartsort_<version>.flatpak`.
+
+### 3. Git Hygiene Policy
+All intermediate build directories (e.g. `SmartSort.AppDir/`, `app_dir/`, `repo/`) are cleaned up automatically by their respective build scripts. Output binaries (`*.deb`, `*.AppImage`, `*.flatpak`), temporary execution files (`__pycache__/`, `.pytest_cache/`), logs (`logs/`), and active user configurations (`config/config.json`) are ignored in `.gitignore` and must never be tracked in the repository.
+
+### 4. XDG Base Directory Compliance
+SmartSort fully complies with the Linux XDG Base Directory Specification. All application-specific user directories are resolved programmatically:
+- **Active User Configuration**: `$XDG_CONFIG_HOME/smartsort/config.json` (falls back to `~/.config/smartsort/config.json`).
+- **Execution & Log State**: `$XDG_STATE_HOME/smartsort/` (falls back to `~/.local/state/smartsort/`).
+- **User Data Storage**: `$XDG_DATA_HOME/smartsort/` (falls back to `~/.local/share/smartsort/`).
+- **User Cache Directory**: `$XDG_CACHE_HOME/smartsort/` (falls back to `~/.cache/smartsort/`).
+
+#### A. Migration Behaviour
+When a new version is booted, SmartSort automatically checks for legacy repository folders. If the old configuration file `config/config.json` is found inside the repository root, its settings are copied to the new XDG configuration location, and the old config file is deleted to avoid git pollution. Legacy log files in `logs/` are also moved to the new XDG state folder and the empty directory is deleted.
+
+#### B. Developer Path Architecture
+Developers must NEVER hardcode paths or access the `config/`, `logs/`, or `assets/` folders directly. All path resolution is handled by the central [AppPaths](file:///home/websrp/SmartSort/src/utils/paths.py) utility class, which resolves paths relative to the environment and active runtime format.
+
+---
+
 ## Author
 
 * **Author**: Soumya Ranjan Parida
@@ -422,4 +523,4 @@ The following enhancements are planned for future updates:
 
 ## License
 
-License to be decided.
+GNU General Public License v3 (GPLv3)

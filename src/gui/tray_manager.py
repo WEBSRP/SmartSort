@@ -32,10 +32,8 @@ class TrayStateManager:
         if QApplication.instance() is None or (self.tray_icon and "Mock" in type(self.tray_icon).__name__):
             return
             
-        # Determine project root dynamically based on this file's path (three levels up from src/gui/tray_manager.py)
-        current_file_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_file_dir))
-        icon_dir = os.path.abspath(os.path.join(project_root, "assets", "icons"))
+        from src.utils.paths import AppPaths
+        icon_dir = str(AppPaths.resource_dir() / "icons")
         
         logger = getattr(self.parent, "logger", None)
         if logger:

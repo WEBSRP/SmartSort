@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=SmartSort
+Comment=Intelligent Download Organizer
+Exec=smartsort
+Icon=com.smartsort.SmartSort
+Terminal=false
+Type=Application
+Categories=Utility;

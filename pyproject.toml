@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartsort"
+dynamic = ["version"]
+description = "Intelligent Download Organizer and File Automation Platform"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "Soumya Ranjan Parida", email = "contact@smartsort-org.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: X11 Applications :: Qt",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "PyQt6>=6.0.0",
+    "watchdog>=2.0.0",
+    "notify2>=0.3.0",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "src.version.VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

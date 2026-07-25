@@ -1,7 +1,0 @@
-#!/bin/sh
-set -e
-if [ "$1" = "remove" ]; then
-    systemctl --user stop smartsort.service || true
-    systemctl --user disable smartsort.service || true
-fi
-exit 0

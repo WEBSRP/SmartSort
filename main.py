@@ -13,7 +13,7 @@ def run_daemon():
     from src.organizer import FileOrganizer
     from src.monitor import FileMonitor
     
-    config = ConfigManager(config_path="config/config.json", default_path="config/default_config.json")
+    config = ConfigManager()
     logger = SmartSortLogger()
     ensure_user_icons_installed(logger)
     organizer = FileOrganizer(config, logger)
@@ -57,13 +57,19 @@ def ensure_user_icons_installed(logger=None):
     if not sys.platform.startswith("linux"):
         return
         
+    from src.utils.packaging import detect_package_type, PackageType
+    if detect_package_type() == PackageType.FLATPAK:
+        if logger:
+            logger.info("Running inside Flatpak. Skipping host icon installation and cache updates.")
+        return
+        
     try:
         user_icons_dir = os.path.expanduser("~/.local/share/icons")
         user_hicolor_dir = os.path.join(user_icons_dir, "hicolor")
         
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        project_hicolor_dir = os.path.join(project_root, "assets", "icons", "hicolor")
-        project_logo_path = os.path.join(project_root, "assets", "icons", "logo.png")
+        from src.utils.paths import AppPaths
+        project_hicolor_dir = str(AppPaths.resource_dir() / "icons" / "hicolor")
+        project_logo_path = str(AppPaths.resource_dir() / "icons" / "logo.png")
         
         if not os.path.exists(project_hicolor_dir):
             if logger:
@@ -176,8 +182,8 @@ def main():
     if isinstance(QApplication, type) and hasattr(QApplication, "instance"):
         inst = QApplication.instance()
         if inst is not None and not hasattr(inst, "mock_calls"):
-            project_root = os.path.dirname(os.path.abspath(__file__))
-            icon_dir = os.path.join(project_root, "assets", "icons")
+            from src.utils.paths import AppPaths
+            icon_dir = str(AppPaths.resource_dir() / "icons")
             current_paths = QIcon.themeSearchPaths()
             if icon_dir not in current_paths:
                 QIcon.setThemeSearchPaths(current_paths + [icon_dir])
@@ -186,13 +192,13 @@ def main():
             if not logo_icon.isNull():
                 app.setWindowIcon(logo_icon)
             else:
-                icon_path = os.path.join(icon_dir, "logo.png")
-                if os.path.exists(icon_path):
-                    app.setWindowIcon(QIcon(icon_path))
+                icon_path = Path(icon_dir) / "logo.png"
+                if icon_path.exists():
+                    app.setWindowIcon(QIcon(str(icon_path)))
         
     window = SmartSortGUI()
     
-    config = ConfigManager(config_path="config/config.json", default_path="config/default_config.json")
+    config = ConfigManager()
     
     if (args.service or config.get("start_minimized")) and getattr(window, "tray_available", False):
         # Run directly in tray (don't show the dashboard window)

@@ -1,13 +1,21 @@
 import logging
 import os
-import glob
 from datetime import datetime, timedelta
+from pathlib import Path
+from src.utils.paths import AppPaths
 
 class SmartSortLogger:
     def __init__(self, log_dir="logs", retention_days=7):
-        self.log_dir = log_dir
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+        is_testing = "PYTEST_CURRENT_TEST" in os.environ
+        
+        if log_dir and Path(log_dir).is_absolute():
+            self.log_dir = Path(log_dir)
+        elif is_testing:
+            self.log_dir = Path(log_dir)
+        else:
+            self.log_dir = AppPaths.logs_dir()
+            
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         
         self.logger = logging.getLogger("SmartSort")
         self.logger.setLevel(logging.INFO)
@@ -15,7 +23,7 @@ class SmartSortLogger:
         # Clear existing handlers to prevent duplicate message logs across instances or test executions
         self.logger.handlers.clear()
         
-        log_file = os.path.join(log_dir, f"smartsort_{datetime.now().strftime('%Y%m%d')}.log")
+        log_file = self.log_dir / f"smartsort_{datetime.now().strftime('%Y%m%d')}.log"
         handler = logging.FileHandler(log_file)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
@@ -34,18 +42,18 @@ class SmartSortLogger:
         try:
             now = datetime.now()
             cutoff = now - timedelta(days=retention_days)
-            pattern = os.path.join(self.log_dir, "smartsort_*.log")
-            for log_file in glob.glob(pattern):
-                base = os.path.basename(log_file)
-                # Parse date from smartsort_YYYYMMDD.log
-                date_str = base.replace("smartsort_", "").replace(".log", "")
-                try:
-                    file_date = datetime.strptime(date_str, "%Y%m%d")
-                    if file_date < cutoff:
-                        os.remove(log_file)
-                except ValueError:
-                    # Ignore malformed filenames
-                    pass
+            for log_file in self.log_dir.glob("smartsort_*.log"):
+                if log_file.is_file():
+                    base = log_file.name
+                    # Parse date from smartsort_YYYYMMDD.log
+                    date_str = base.replace("smartsort_", "").replace(".log", "")
+                    try:
+                        file_date = datetime.strptime(date_str, "%Y%m%d")
+                        if file_date < cutoff:
+                            log_file.unlink(missing_ok=True)
+                    except ValueError:
+                        # Ignore malformed filenames
+                        pass
         except Exception as e:
             # Silently catch exceptions to ensure log issues don't crash initialization
             print(f"Log retention cleanup encountered an error: {e}")
@@ -70,4 +78,3 @@ class SmartSortLogger:
 
     def debug(self, msg):
         self.logger.debug(msg)
-

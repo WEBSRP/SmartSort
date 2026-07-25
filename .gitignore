@@ -1,27 +1,79 @@
 # Python
 __pycache__/
-*.py[cod]
-.pytest_cache/
-.coverage
+*.pyc
+*.pyo
+*.pyd
+*$py.class
 
-# Virtual environments
-venv/
+# Virtual Environments
 .venv/
+venv/
+env/
+ENV/
+smartsort/
 
-# Config backups
-*.bak
+# Build
+build/**
+!build/
+!build/**/
+!build/**/.gitkeep
+dist/
+site/
+*.egg-info/
+.eggs/
+packaging/appimage/appimagetool
 
-# Logs
+# Package Outputs
+*.deb
+*.AppImage
+*.flatpak
+*.rpm
+*.tar.gz
+
+# Runtime Configuration
+config/config.json
+config/config.json.bak
+
+# Runtime Logs
 logs/
+test_logs/
 *.log
 
-# Runtime generated files
-*.pid
+# Python Testing
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
 
-# OS
-.DS_Store
-Thumbs.db
+# Type Checking
+.mypy_cache/
+.ruff_cache/
+.pyre/
 
 # IDE
 .vscode/
 .idea/
+
+# Operating System
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary Files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# Development
+scratch/
+status.md
+tree.md
+
+# Flatpak builder cache
+.flatpak-builder/
+
+# Generated Wheels
+python-wheels/
+packaging/flatpak/python-wheels/

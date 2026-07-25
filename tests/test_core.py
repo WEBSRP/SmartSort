@@ -1280,4 +1280,233 @@ def test_ensure_user_icons_installed(tmp_path, monkeypatch):
     mock_run.assert_called()
 
 
+def test_autostart_enable_disable(temp_dir):
+    from src.utils.autostart import AutostartManager
+    
+    autostart_dir = temp_dir / "autostart"
+    manager = AutostartManager(autostart_dir=str(autostart_dir))
+    
+    assert manager.is_autostart_enabled() is False
+    
+    # Enable
+    success = manager.enable_autostart()
+    assert success is True
+    assert manager.is_autostart_enabled() is True
+    assert (autostart_dir / "smartsort.desktop").exists()
+    
+    # Read desktop content
+    content = (autostart_dir / "smartsort.desktop").read_text()
+    assert "[Desktop Entry]" in content
+    assert "Name=SmartSort" in content
+    assert "X-GNOME-Autostart-enabled=true" in content
+    
+    # Disable
+    success = manager.disable_autostart()
+    assert success is True
+    assert manager.is_autostart_enabled() is False
+    assert not (autostart_dir / "smartsort.desktop").exists()
+
+
+def test_autostart_appimage_moved(temp_dir, monkeypatch):
+    from src.utils.autostart import AutostartManager
+    from src.utils.packaging import PackageType
+    
+    autostart_dir = temp_dir / "autostart"
+    autostart_dir.mkdir()
+    manager = AutostartManager(autostart_dir=str(autostart_dir))
+    
+    # Case 1: Package is not AppImage
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.SOURCE)
+    moved, curr, old = manager.check_appimage_moved()
+    assert moved is False
+    
+    # Case 2: Package is AppImage, but env is missing
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.APPIMAGE)
+    monkeypatch.setenv("APPIMAGE", "")
+    moved, curr, old = manager.check_appimage_moved()
+    assert moved is False
+    
+    # Case 3: Package is AppImage, desktop file doesn't exist
+    monkeypatch.setenv("APPIMAGE", "/path/to/new.AppImage")
+    moved, curr, old = manager.check_appimage_moved()
+    assert moved is False
+    
+    # Case 4: Desktop file exists but path matches
+    desktop_file = autostart_dir / "smartsort.desktop"
+    desktop_file.write_text("[Desktop Entry]\nExec=/path/to/new.AppImage --service\nName=SmartSort")
+    moved, curr, old = manager.check_appimage_moved()
+    assert moved is False
+    
+    # Case 5: Desktop file exists but path differs (AppImage moved)
+    desktop_file.write_text("[Desktop Entry]\nExec=/path/to/old.AppImage --service\nName=SmartSort")
+    moved, curr, old = manager.check_appimage_moved()
+    assert moved is True
+    assert curr == "/path/to/new.AppImage"
+    assert old == "/path/to/old.AppImage"
+
+
+def test_autostart_command_resolution(temp_dir, monkeypatch):
+    from src.utils.autostart import AutostartManager
+    from src.utils.packaging import PackageType
+    
+    autostart_dir = temp_dir / "autostart"
+    manager = AutostartManager(autostart_dir=str(autostart_dir))
+    
+    # Test Flatpak
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.FLATPAK)
+    cmd = manager.get_command()
+    assert "flatpak run com.smartsort.SmartSort" in cmd
+    
+    # Test Debian
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.DEBIAN)
+    cmd = manager.get_command()
+    assert "/usr/bin/smartsort" in cmd
+    
+    # Test AppImage
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.APPIMAGE)
+    monkeypatch.setenv("APPIMAGE", "/some/path/SmartSort.AppImage")
+    cmd = manager.get_command()
+    assert "/some/path/SmartSort.AppImage" in cmd
+    
+    # Test Source
+    import sys
+    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.SOURCE)
+    cmd = manager.get_command()
+    assert sys.executable in cmd
+    assert os.path.abspath(sys.argv[0]) in cmd
+
+
+def test_verify_and_repair_startup_config(temp_dir, monkeypatch):
+    from src.gui.main_window import SmartSortGUI
+    from unittest.mock import MagicMock
+    from src.utils.autostart import AutostartManager
+    from src.utils.packaging import PackageType
+    from PyQt6.QtWidgets import QMessageBox
+    import sys
+    
+    # Mock home directory
+    monkeypatch.setattr("pathlib.Path.home", lambda: temp_dir)
+    
+    # Create config file
+    config_dir = temp_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    config_file.write_text('{"autostart": true, "start_minimized": false}')
+    
+    # Mock sys.argv
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    
+    # Mock QMessageBox
+    mock_question = MagicMock(return_value=QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    
+    # Mock QApplication or get existing instance
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    
+    # Create GUI instance (partially mocked)
+    gui = SmartSortGUI()
+    gui.config.set("autostart", True)
+    
+    # Ensure autostart manager uses temporary dir
+    autostart_dir = temp_dir / "autostart"
+    gui.autostart_manager = AutostartManager(autostart_dir=str(autostart_dir))
+    
+    # Case 1: Entry is missing
+    assert not (autostart_dir / "smartsort.desktop").exists()
+    gui.verify_and_repair_startup_config()
+    
+    # The prompt should be shown and files written
+    mock_question.assert_called()
+    assert (autostart_dir / "smartsort.desktop").exists()
+    
+    # Reset mocks and files
+    mock_question.reset_mock()
+    (autostart_dir / "smartsort.desktop").write_text("corrupted content")
+    
+    # Case 2: Entry is corrupted
+    gui.verify_and_repair_startup_config()
+    mock_question.assert_called()
+    assert "Type=Application" in (autostart_dir / "smartsort.desktop").read_text()
+
+
+def test_xdg_paths_and_migration(tmp_path, monkeypatch):
+    from src.utils.paths import AppPaths
+    from src.utils.config import ConfigManager
+    import json
+
+    # Mock XDG environment variables to point to tmp_path subdirs
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config_home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state_home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data_home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache_home"))
+
+    # Test path compliance
+    assert AppPaths.config_dir() == tmp_path / "config_home" / "smartsort"
+    assert AppPaths.config_file() == tmp_path / "config_home" / "smartsort" / "config.json"
+    assert AppPaths.logs_dir() == tmp_path / "state_home" / "smartsort"
+
+    # Mock AppPaths._bundle_root to return a fake repo root in tmp_path
+    fake_repo_root = tmp_path / "fake_repo"
+    fake_repo_root.mkdir()
+    monkeypatch.setattr(AppPaths, "_bundle_root", lambda: fake_repo_root)
+
+    # 1. First run / Fresh install setup
+    # Write a default config template in our fake repo root
+    default_config_dir = fake_repo_root / "config"
+    default_config_dir.mkdir()
+    default_template = default_config_dir / "config.default.json"
+    default_data = {
+        "large_file_threshold_gb": 1.5,
+        "enable_notifications": False,
+        "downloads_folder": "~/Downloads"
+    }
+    with open(default_template, 'w') as f:
+        json.dump(default_data, f)
+
+    # Instantiate ConfigManager. It should copy default to active XDG config path.
+    manager = ConfigManager()
+    assert AppPaths.config_file().exists()
+    assert manager.get("enable_notifications") is False
+    assert manager.get("large_file_threshold_gb") == int(1.5 * (1024**3))
+
+    # Clean active config for migration test
+    AppPaths.config_file().unlink()
+
+    # 2. Existing settings migration test
+    # Create legacy config in fake repo config folder
+    legacy_config = default_config_dir / "config.json"
+    legacy_data = {
+        "theme": "dark",
+        "autostart": True,
+        "large_file_threshold_gb": 4.5
+    }
+    with open(legacy_config, 'w') as f:
+        json.dump(legacy_data, f)
+
+    # Legacy logs migration test
+    legacy_logs_dir = fake_repo_root / "logs"
+    legacy_logs_dir.mkdir()
+    legacy_log_file = legacy_logs_dir / "smartsort_20260725.log"
+    legacy_log_file.write_text("Legacy log data")
+
+    # Instantiate ConfigManager again. It should migrate settings and logs.
+    manager2 = ConfigManager()
+    assert AppPaths.config_file().exists()
+    # It should contain migrated settings
+    assert manager2.get("theme") == "dark"
+    assert manager2.get("autostart") is True
+    assert manager2.get("large_file_threshold_gb") == int(4.5 * (1024**3))
+    
+    # Verify legacy config was removed/cleaned up
+    assert not legacy_config.exists()
+
+    # Verify logs were migrated
+    migrated_log_file = AppPaths.logs_dir() / "smartsort_20260725.log"
+    assert migrated_log_file.exists()
+    assert migrated_log_file.read_text() == "Legacy log data"
+    assert not legacy_log_file.exists()
+    assert not legacy_logs_dir.exists()
+
+
 

@@ -1,5 +1,5 @@
 Name:           smartsort
-Version:        0.5.0
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Intelligent Download Organizer for Linux
 
@@ -90,5 +90,5 @@ systemctl --user daemon-reload || true
 /usr/lib/systemd/user/smartsort.service
 
 %changelog
-* Mon Jul 13 2026 Soumya Ranjan Parida <contact@smartsort-org.com> - 0.5.0-1
-- Initial release
+* Sat Jul 25 2026 Soumya Ranjan Parida <contact@smartsort-org.com> - 1.0.0-1
+- Official v1.0.0 release with XDG compliance and packaging refactor.
