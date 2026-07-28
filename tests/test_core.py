@@ -1340,66 +1340,44 @@ def test_autostart_enable_disable(temp_dir):
 
 
 def test_autostart_appimage_moved(temp_dir, monkeypatch):
+    """
+    check_appimage_moved() is a compatibility stub in v1.0.3+ (AppImage removed).
+    It must always return (False, "", "") regardless of environment state.
+    """
     from src.utils.autostart import AutostartManager
-    from src.utils.packaging import PackageType
-    
+
     autostart_dir = temp_dir / "autostart"
     autostart_dir.mkdir()
     manager = AutostartManager(autostart_dir=str(autostart_dir))
-    
-    # Case 1: Package is not AppImage
-    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.SOURCE)
+
+    # Stub always returns False regardless of any environment setup
     moved, curr, old = manager.check_appimage_moved()
     assert moved is False
-    
-    # Case 2: Package is AppImage, but env is missing
-    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.APPIMAGE)
-    monkeypatch.setenv("APPIMAGE", "")
+    assert curr == ""
+    assert old == ""
+
+    # Even with an APPIMAGE env var set, stub returns False
+    monkeypatch.setenv("APPIMAGE", "/some/path/SmartSort.AppImage")
     moved, curr, old = manager.check_appimage_moved()
     assert moved is False
-    
-    # Case 3: Package is AppImage, desktop file doesn't exist
-    monkeypatch.setenv("APPIMAGE", "/path/to/new.AppImage")
-    moved, curr, old = manager.check_appimage_moved()
-    assert moved is False
-    
-    # Case 4: Desktop file exists but path matches
-    desktop_file = autostart_dir / "smartsort.desktop"
-    desktop_file.write_text("[Desktop Entry]\nExec=/path/to/new.AppImage --service\nName=SmartSort")
-    moved, curr, old = manager.check_appimage_moved()
-    assert moved is False
-    
-    # Case 5: Desktop file exists but path differs (AppImage moved)
-    desktop_file.write_text("[Desktop Entry]\nExec=/path/to/old.AppImage --service\nName=SmartSort")
-    moved, curr, old = manager.check_appimage_moved()
-    assert moved is True
-    assert curr == "/path/to/new.AppImage"
-    assert old == "/path/to/old.AppImage"
 
 
 def test_autostart_command_resolution(temp_dir, monkeypatch):
+    """
+    Verify get_command() returns the correct Exec string for each supported
+    package type (DEBIAN and SOURCE). Flatpak/AppImage removed in v1.0.3.
+    """
     from src.utils.autostart import AutostartManager
     from src.utils.packaging import PackageType
-    
+
     autostart_dir = temp_dir / "autostart"
     manager = AutostartManager(autostart_dir=str(autostart_dir))
-    
-    # Test Flatpak
-    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.FLATPAK)
-    cmd = manager.get_command()
-    assert "flatpak run com.smartsort.SmartSort" in cmd
-    
+
     # Test Debian
     monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.DEBIAN)
     cmd = manager.get_command()
     assert "/usr/bin/smartsort" in cmd
-    
-    # Test AppImage
-    monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.APPIMAGE)
-    monkeypatch.setenv("APPIMAGE", "/some/path/SmartSort.AppImage")
-    cmd = manager.get_command()
-    assert "/some/path/SmartSort.AppImage" in cmd
-    
+
     # Test Source
     import sys
     monkeypatch.setattr("src.utils.autostart.detect_package_type", lambda: PackageType.SOURCE)

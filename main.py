@@ -56,13 +56,7 @@ def run_daemon():
 def ensure_user_icons_installed(logger=None):
     if not sys.platform.startswith("linux"):
         return
-        
-    from src.utils.packaging import detect_package_type, PackageType
-    if detect_package_type() == PackageType.FLATPAK:
-        if logger:
-            logger.info("Running inside Flatpak. Skipping host icon installation and cache updates.")
-        return
-        
+
     try:
         user_icons_dir = os.path.expanduser("~/.local/share/icons")
         user_hicolor_dir = os.path.join(user_icons_dir, "hicolor")

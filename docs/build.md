@@ -1,60 +1,76 @@
-# Compilation & Build Guide
+# Building SmartSort
 
-This document describes how to set up your developer environment and compile the official SmartSort Debian package locally.
-
----
-
-## 1. Developer Environment Setup
-
-To run and debug SmartSort from source:
-
-1.  **Prerequisites**:
-    - Python 3.8 or higher.
-    - PyQt6 (PyQt6-Qt6).
-    - Watchdog.
-    - Notify2 (for desktop notifications).
-
-2.  **Dependencies Installation**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-3.  **Run Locally**:
-    ```bash
-    python3 main.py
-    ```
-
-4.  **Run Test Suite**:
-    We use `pytest` for automated test verification:
-    ```bash
-    python3 -m pytest tests/
-    ```
+This document describes how to build SmartSort from source and produce a release package.
 
 ---
 
-## 2. Compiling the Release Package
+## Prerequisites
 
-SmartSort v1.0.1 officially supports Debian-based distributions. The release build compiles dynamically from the active source tree into the central `build/deb/` output directory.
-
-Before building, verify the target version in [src/version.py](../src/version.py).
-
-### Officially Supported
-
-- Debian
-- Ubuntu
-- Linux Mint
-- Other Debian-based distributions
-
-### Future Planned Packaging
-
-- AppImage
-- Flatpak
-- RPM
-
-### Build Debian (`.deb`)
+Install the required runtime and build dependencies:
 
 ```bash
-./packaging/debian/build_deb.sh
+sudo apt-get install python3 python3-pyqt6 python3-watchdog python3-notify2 \
+                     dpkg-dev libglib2.0-0 gir1.2-notify-0.7
 ```
 
-Outputs to `build/deb/smartsort_<version>_all.deb`.
+For development, also install:
+
+```bash
+pip install pytest typeguard
+```
+
+---
+
+## Running from Source
+
+```bash
+git clone https://github.com/smartsort-org/smartsort.git
+cd smartsort
+PYTHONPATH=. python main.py
+```
+
+---
+
+## Building the Debian Package
+
+SmartSort v1.0.3 is distributed as a `.deb` package only.
+
+```bash
+bash packaging/debian/build_deb.sh
+```
+
+The script:
+1. Reads the version from `src/version.py`
+2. Assembles the package tree under `packaging/debian/smartsort_<ver>_all/`
+3. Calls `dpkg-deb --build` to produce `build/deb/smartsort_<ver>_all.deb`
+4. Cleans up the temporary tree
+
+Output: `build/deb/smartsort_1.0.3_all.deb`
+
+---
+
+## Running the Test Suite
+
+```bash
+PYTHONPATH=. pytest
+```
+
+For CI / headless environments:
+
+```bash
+xvfb-run -a python -m pytest -vv -s tests/
+```
+
+See [docs/ci_headless_hang_postmortem.md](ci_headless_hang_postmortem.md) for details on
+the headless Qt test isolation approach used in this project.
+
+---
+
+## Release Checklist
+
+1. Bump `src/version.py`
+2. Update `CHANGELOG.md`
+3. Run `PYTHONPATH=. pytest` — all tests must pass
+4. Run `bash packaging/debian/build_deb.sh`
+5. Verify package: `dpkg-deb -I build/deb/smartsort_<ver>_all.deb`
+6. Install and smoke-test on a clean Debian/Ubuntu machine

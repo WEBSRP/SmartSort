@@ -2,6 +2,35 @@
 
 All notable changes to the SmartSort project will be documented in this file.
 
+## [1.0.3] - 2026-07-28
+
+### Fixed
+- **CI Headless Hang (Root Cause)**: `start_monitor()` called `QMessageBox.warning()` when
+  the configured downloads folder did not exist on GitHub-hosted runners (`/home/runner/Downloads`
+  is not created by default). `QMessageBox.warning()` was not mocked in the test, causing it to
+  start a blocking modal event loop that never resolved in a headless environment.
+- **QMessageBox Mock Coverage**: Expanded `test_verify_and_repair_startup_config` to mock all
+  four `QMessageBox` static methods (`question`, `warning`, `information`, `critical`), preventing
+  any unguarded dialog from blocking the headless runner.
+- **Process Exit After Tests**: `conftest.py` session teardown now registers `os._exit(0)` via
+  `atexit` as a guaranteed process-exit backstop, ensuring pytest terminates even if Qt background
+  objects or non-daemon threads remain alive after the session.
+
+### Changed
+- **Debian-Only Release**: Removed AppImage and Flatpak `PackageType` variants, detection logic,
+  capability maps, and all related autostart branches. SmartSort v1.0.3 is officially Debian-only.
+- **`PYTEST_CURRENT_TEST` Guard**: `SmartSortGUI.__init__` no longer auto-starts `MonitorThread`,
+  `status_timer`, or single-shot startup timers during test execution, eliminating QThread and
+  QTimer race conditions in the CI test environment.
+- **Repository Cleanup**: Removed 15 stale technical reports, runtime log files, the old `.deb`
+  build artifact, and the Obsidian vault from the `reports/` directory.
+- **Documentation Refresh**: Updated `docs/build.md`, `docs/packaging.md`, `docs/release.md`,
+  and `README.md` to reflect Debian-only installation, remove references to planned packaging
+  formats, and correct all version references to v1.0.3.
+- **`.gitignore` Rewrite**: Replaced the previous minimal `.gitignore` with a comprehensive set
+  of sections covering Python, virtual environments, pytest, IDEs, OS files, logs, build
+  artifacts, Debian package files, and local configuration.
+
 ## [1.0.1] - 2026-07-25
 
 ### Fixed

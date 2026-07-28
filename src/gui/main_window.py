@@ -17,7 +17,7 @@ from src.utils.config import ConfigManager
 from src.utils.logger import SmartSortLogger
 from src.organizer import FileOrganizer
 from src.monitor import FileMonitor
-from src.utils.packaging import detect_package_type, PackageType, Capability, has_capability, check_appimage_moved
+from src.utils.packaging import detect_package_type, PackageType, Capability, has_capability
 
 class WorkerSignals(QObject):
     finished = pyqtSignal(str, str, str) # file_path, result, info
@@ -789,55 +789,37 @@ class SmartSortGUI(QMainWindow):
         self.lbl_activity_val.setText(getattr(self, "last_activity_time", "Never"))
         
         if hasattr(self, "lbl_service_control_status"):
-            pkg_type = detect_package_type()
-            if pkg_type == PackageType.FLATPAK:
-                self.lbl_service_control_status.setText("Background Service: Unavailable")
-            else:
-                self.lbl_service_control_status.setText(f"Service status: {svc_status}")
+            self.lbl_service_control_status.setText(f"Service status: {svc_status}")
             
-        pkg_type = detect_package_type()
-        if pkg_type == PackageType.APPIMAGE:
-            if hasattr(self, "btn_install_service") and hasattr(self, "btn_update_service") and hasattr(self, "btn_remove_service"):
-                if svc_status == "Not Installed":
-                    self.btn_install_service.setEnabled(True)
-                    self.btn_update_service.setEnabled(False)
-                    self.btn_remove_service.setEnabled(False)
-                else:
-                    self.btn_install_service.setEnabled(False)
-                    self.btn_update_service.setEnabled(True)
-                    self.btn_remove_service.setEnabled(True)
-        elif pkg_type != PackageType.FLATPAK:
-            if hasattr(self, "btn_install_service"):
-                if svc_status == "Not Installed":
-                    self.btn_install_service.setEnabled(True)
-                    self.btn_remove_service.setEnabled(False)
-                    self.btn_start_service.setEnabled(False)
-                    self.btn_stop_service.setEnabled(False)
-                    self.btn_restart_service.setEnabled(False)
-                    self.btn_enable_service.setEnabled(False)
-                    self.btn_disable_service.setEnabled(False)
-                else:
-                    self.btn_install_service.setEnabled(False)
-                    self.btn_remove_service.setEnabled(True)
-                    self.btn_start_service.setEnabled(svc_status != "Running")
-                    self.btn_stop_service.setEnabled(svc_status == "Running")
-                    self.btn_restart_service.setEnabled(svc_status == "Running")
-                    
-                    # To determine enable/disable button state:
-                    # check systemctl is-enabled
-                    is_enabled_now = False
-                    try:
-                        import subprocess
-                        res_enabled = subprocess.run(
-                            ["systemctl", "--user", "is-enabled", "smartsort.service"],
-                            capture_output=True, text=True, check=False, timeout=2.0
-                        )
-                        is_enabled_now = (res_enabled.stdout.strip() == "enabled")
-                    except Exception:
-                        is_enabled_now = (svc_status == "Stopped")
-                        
-                    self.btn_enable_service.setEnabled(not is_enabled_now)
-                    self.btn_disable_service.setEnabled(is_enabled_now)
+        if hasattr(self, "btn_install_service"):
+            if svc_status == "Not Installed":
+                self.btn_install_service.setEnabled(True)
+                self.btn_remove_service.setEnabled(False)
+                self.btn_start_service.setEnabled(False)
+                self.btn_stop_service.setEnabled(False)
+                self.btn_restart_service.setEnabled(False)
+                self.btn_enable_service.setEnabled(False)
+                self.btn_disable_service.setEnabled(False)
+            else:
+                self.btn_install_service.setEnabled(False)
+                self.btn_remove_service.setEnabled(True)
+                self.btn_start_service.setEnabled(svc_status != "Running")
+                self.btn_stop_service.setEnabled(svc_status == "Running")
+                self.btn_restart_service.setEnabled(svc_status == "Running")
+
+                is_enabled_now = False
+                try:
+                    import subprocess
+                    res_enabled = subprocess.run(
+                        ["systemctl", "--user", "is-enabled", "smartsort.service"],
+                        capture_output=True, text=True, check=False, timeout=2.0
+                    )
+                    is_enabled_now = (res_enabled.stdout.strip() == "enabled")
+                except Exception:
+                    is_enabled_now = (svc_status == "Stopped")
+
+                self.btn_enable_service.setEnabled(not is_enabled_now)
+                self.btn_disable_service.setEnabled(is_enabled_now)
                 
         from src.gui.tray_manager import TrayState
         if self.tray_available and self.tray_manager.current_state in [TrayState.IDLE, TrayState.PAUSED, TrayState.ERROR]:
@@ -849,24 +831,6 @@ class SmartSortGUI(QMainWindow):
     def verify_and_repair_startup_config(self):
         # 1. Verify autostart desktop entry
         autostart_expected = bool(self.config.get("autostart", False))
-        pkg_type = detect_package_type()
-        
-        # Check if AppImage has moved for autostart
-        if pkg_type == PackageType.APPIMAGE:
-            if hasattr(self, "autostart_manager"):
-                autostart_moved, current_app_path, old_app_path = self.autostart_manager.check_appimage_moved()
-                if autostart_moved:
-                    reply = QMessageBox.question(
-                        self,
-                        "AppImage Path Changed (Autostart)",
-                        f"The AppImage has moved from:\n{old_app_path}\n\nto:\n{current_app_path}\n\nUpdate automatic startup (autostart) configuration?",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                    )
-                    if reply == QMessageBox.StandardButton.Yes:
-                        if self.autostart_manager.enable_autostart():
-                            self.show_notification("SmartSort Autostart", "Autostart path updated successfully.")
-                        else:
-                            QMessageBox.critical(self, "Error", "Failed to update autostart path.")
 
         # Verify autostart entry presence and validity (missing or corrupted)
         if autostart_expected and hasattr(self, "autostart_manager"):
@@ -902,25 +866,7 @@ class SmartSortGUI(QMainWindow):
                     else:
                         QMessageBox.critical(self, "Error", "Failed to repair startup entry.")
 
-        # 2. Verify systemd background service (only for non-Flatpak)
-        if pkg_type != PackageType.FLATPAK:
-            # Check if AppImage has moved for systemd service
-            has_moved, current_path, service_path = check_appimage_moved()
-            if has_moved:
-                reply = QMessageBox.question(
-                    self,
-                    "AppImage Location Changed (Service)",
-                    f"The AppImage has moved from:\n{service_path}\n\nto:\n{current_path}\n\nUpdate background service?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.install_service()
-
     def get_service_status(self) -> str:
-        pkg_type = detect_package_type()
-        if pkg_type == PackageType.FLATPAK:
-            return "Unavailable"
-            
         from pathlib import Path
         import subprocess
         service_file = Path.home() / ".config" / "systemd" / "user" / "smartsort.service"
@@ -930,20 +876,18 @@ class SmartSortGUI(QMainWindow):
                 capture_output=True, text=True, check=False, timeout=2.0
             )
             enabled_out = res_enabled.stdout.strip()
-            
+
             if not service_file.exists() and (enabled_out == "not-found" or "No such file" in res_enabled.stderr or res_enabled.returncode == 4):
                 return "Not Installed"
-                
+
             res_active = subprocess.run(
                 ["systemctl", "--user", "is-active", "smartsort.service"],
                 capture_output=True, text=True, check=False, timeout=2.0
             )
             active_out = res_active.stdout.strip()
-            
+
             if active_out == "active":
                 return "Running"
-            elif pkg_type == PackageType.APPIMAGE:
-                return "Installed"
             elif enabled_out == "enabled":
                 return "Stopped"
             else:
@@ -951,42 +895,18 @@ class SmartSortGUI(QMainWindow):
         except Exception:
             if not service_file.exists():
                 return "Not Installed"
-            if pkg_type == PackageType.APPIMAGE:
-                return "Installed"
             return "Stopped"
 
     def install_service(self):
-        pkg_type = detect_package_type()
-        if pkg_type == PackageType.FLATPAK:
-            return
-            
         from pathlib import Path
         import os
         try:
             service_dir = Path.home() / ".config" / "systemd" / "user"
             service_dir.mkdir(parents=True, exist_ok=True)
             service_file = service_dir / "smartsort.service"
-            
-            if pkg_type == PackageType.APPIMAGE:
-                appimage_path = os.environ.get("APPIMAGE")
-                if not appimage_path:
-                    appimage_path = Path(sys.argv[0]).resolve()
-                
-                content = f"""[Unit]
-Description=SmartSort File Organizer Service (AppImage)
-After=network.target
 
-[Service]
-Type=simple
-ExecStart={appimage_path} --daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-"""
-            else:
-                main_path = Path(sys.argv[0]).resolve()
-                content = f"""[Unit]
+            main_path = Path(sys.argv[0]).resolve()
+            content = f"""[Unit]
 Description=SmartSort File Organizer Service
 After=network.target
 
@@ -1177,15 +1097,12 @@ WantedBy=default.target
 
     def init_notification_system(self):
         self.notifications_enabled = False
-        if detect_package_type() == PackageType.FLATPAK:
+        try:
+            import notify2
+            notify2.init("SmartSort")
             self.notifications_enabled = True
-        else:
-            try:
-                import notify2
-                notify2.init("SmartSort")
-                self.notifications_enabled = True
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -1499,60 +1416,28 @@ WantedBy=default.target
         self.btn_disable_service.clicked.connect(self.disable_service)
         
         pkg_type = detect_package_type()
-        if pkg_type == PackageType.FLATPAK:
-            self.lbl_service_control_status.setText("Background Service: Unavailable")
-            self.lbl_service_info = QLabel("Background services are not available inside the Flatpak sandbox.")
-            self.lbl_service_info.setWordWrap(True)
-            self.lbl_service_info.setStyleSheet("color: #a0a0a0; font-style: italic;")
-            svc_layout.addWidget(self.lbl_service_info)
-            
-            # Hide all buttons
-            self.btn_install_service.setVisible(False)
-            self.btn_remove_service.setVisible(False)
-            self.btn_update_service.setVisible(False)
-            self.btn_start_service.setVisible(False)
-            self.btn_stop_service.setVisible(False)
-            self.btn_restart_service.setVisible(False)
-            self.btn_enable_service.setVisible(False)
-            self.btn_disable_service.setVisible(False)
-        elif pkg_type == PackageType.APPIMAGE:
-            self.btn_install_service.setText("Install Background Service")
-            self.btn_remove_service.setText("Remove")
-            self.btn_update_service.setText("Update")
-            
-            h_svc_btns = QHBoxLayout()
-            h_svc_btns.addWidget(self.btn_install_service)
-            h_svc_btns.addWidget(self.btn_update_service)
-            h_svc_btns.addWidget(self.btn_remove_service)
-            svc_layout.addLayout(h_svc_btns)
-            
-            # Hide non-AppImage buttons
-            self.btn_start_service.setVisible(False)
-            self.btn_stop_service.setVisible(False)
-            self.btn_restart_service.setVisible(False)
-            self.btn_enable_service.setVisible(False)
-            self.btn_disable_service.setVisible(False)
-        else: # DEBIAN / SOURCE
-            self.btn_install_service.setText("Install Service")
-            self.btn_remove_service.setText("Remove Service")
-            
-            h_row1 = QHBoxLayout()
-            h_row1.addWidget(self.btn_install_service)
-            h_row1.addWidget(self.btn_remove_service)
-            h_row1.addWidget(self.btn_enable_service)
-            h_row1.addWidget(self.btn_disable_service)
-            svc_layout.addLayout(h_row1)
-            
-            h_row2 = QHBoxLayout()
-            h_row2.addWidget(self.btn_start_service)
-            h_row2.addWidget(self.btn_stop_service)
-            h_row2.addWidget(self.btn_restart_service)
-            svc_layout.addLayout(h_row2)
-            
-            # Hide AppImage specific buttons
-            self.btn_update_service.setVisible(False)
-            
+        # DEBIAN / SOURCE: show full systemd service controls
+        self.btn_install_service.setText("Install Service")
+        self.btn_remove_service.setText("Remove Service")
+
+        h_row1 = QHBoxLayout()
+        h_row1.addWidget(self.btn_install_service)
+        h_row1.addWidget(self.btn_remove_service)
+        h_row1.addWidget(self.btn_enable_service)
+        h_row1.addWidget(self.btn_disable_service)
+        svc_layout.addLayout(h_row1)
+
+        h_row2 = QHBoxLayout()
+        h_row2.addWidget(self.btn_start_service)
+        h_row2.addWidget(self.btn_stop_service)
+        h_row2.addWidget(self.btn_restart_service)
+        svc_layout.addLayout(h_row2)
+
+        # Hide AppImage-specific update button (not used in Debian/SOURCE)
+        self.btn_update_service.setVisible(False)
+
         layout.addWidget(group_service)
+
         
         # 5. Advanced Group
         group_adv = QGroupBox("Advanced Settings")
@@ -2007,24 +1892,11 @@ WantedBy=default.target
     def show_notification(self, title, message):
         if not self.notifications_enabled:
             return
-        if detect_package_type() == PackageType.FLATPAK:
-            import subprocess
-            try:
-                # Use Desktop Notifications portal via gdbus call
-                res = subprocess.run([
-                    "gdbus", "call", "--session",
-                    "--dest", "org.freedesktop.portal.Desktop",
-                    "--object-path", "/org/freedesktop/portal/desktop",
-                    "--method", "org.freedesktop.portal.Notification.AddNotification",
-                    "",
-                    f"{{'title': <'{title}'>, 'body': <'{message}'>}}"
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0)
-                if res.returncode == 0:
-                    return
-            except Exception:
-                pass
-            
-            # Fallback to tray message if gdbus fails
+        try:
+            import notify2
+            n = notify2.Notification(title, message)
+            n.show()
+        except Exception:
             try:
                 if hasattr(self, "tray_manager") and self.tray_manager and self.tray_manager.tray_icon:
                     self.tray_manager.tray_icon.showMessage(title, message)

@@ -101,38 +101,28 @@ Destinations support template variables:
 
 ## Installation
 
-SmartSort is designed for Linux systems. No path modifications are required after installation. The application automatically detects and adapts to the current user's home directory.
+SmartSort is designed for Debian-based Linux systems.
 
-### Official Release Package
+### Debian / Ubuntu / Linux Mint (.deb)
 
-SmartSort v1.0.1 officially ships as a Debian package.
+Download the latest release package and install:
 
-#### Officially Supported
-
-* Debian
-* Ubuntu
-* Linux Mint
-* Other Debian-based distributions
-
-#### Future Planned Packaging
-
-* AppImage
-* Flatpak
-* RPM
-
-#### Debian / Ubuntu / Linux Mint (.deb)
 ```bash
-sudo dpkg -i smartsort_1.0.1_all.deb
-sudo apt-get install -f # to install dependencies
+sudo dpkg -i smartsort_1.0.3_all.deb
+sudo apt-get install -f   # install any missing dependencies
 ```
-The DEB package installs the application launcher, desktop entry, system tray icons, and the systemd user service file. To enable and start the user service after installation, you can either:
-* Open the SmartSort Dashboard, navigate to **Settings**, and click **Enable Service** (and then **Start Service**) under "Background Service Controls (Systemd)".
-* Or run the following commands in your user session terminal:
+
+The package installs the application launcher, desktop entry, system tray icons, and the
+systemd user service. To enable background monitoring after installation:
+
+- Open SmartSort → **Settings** → click **Enable Service** then **Start Service**, or
+- Run in your terminal:
   ```bash
   systemctl --user daemon-reload
   systemctl --user enable smartsort.service
   systemctl --user start smartsort.service
   ```
+
 To uninstall: `sudo dpkg -r smartsort`.
 
 ### Manual Installation (From Source)

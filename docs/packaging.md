@@ -1,37 +1,53 @@
-# Packaging Architecture
+# Packaging
 
-This document explains the official Debian packaging specification for SmartSort v1.0.1.
+SmartSort v1.0.3 is distributed exclusively as a **Debian package (`.deb`)**.
+
+Supported distributions:
+- Debian 11 (Bullseye) and newer
+- Ubuntu 22.04 LTS and newer
+- Linux Mint 21 and newer
+- Any Debian-based distribution with `python3-pyqt6` available
 
 ---
 
-## 1. Supported Release Package
+## Package Contents
 
-SmartSort v1.0.1 officially ships as a Debian package for:
+The `.deb` package installs the following:
 
-- Debian
-- Ubuntu
-- Linux Mint
-- Other Debian-based distributions
+| Path | Description |
+|---|---|
+| `/usr/bin/smartsort` | Wrapper launch script |
+| `/usr/share/smartsort/` | Application source (Python) |
+| `/usr/share/smartsort/config/config.default.json` | Default configuration |
+| `/usr/share/applications/smartsort.desktop` | Desktop launcher |
+| `/usr/lib/systemd/user/smartsort.service` | User systemd service |
+| `/usr/share/icons/hicolor/*/apps/smartsort*.png` | Application icons |
 
-Future planned packaging formats:
+---
 
-- AppImage
-- Flatpak
-- RPM
-
-## 2. Debian Packaging Specification
-- **Metadata**: Control files are defined under `packaging/debian/DEBIAN/`.
-- **Maintainer Scripts**: 
-  - `postinst`: Updates GTK hicolor icon cache, systemd user daemons, and compiles python bytecode under `/usr/share/smartsort`.
-  - `prerm` & `postrm`: Gently stops user systemd daemons and cleans up leftover files upon removal.
-- **Service Integration**: Installs a user systemd service file under `/usr/lib/systemd/user/smartsort.service` pointing to `/usr/bin/smartsort`.
-
-## 3. Build Output
-
-Run:
+## Installing
 
 ```bash
-./packaging/debian/build_deb.sh
+sudo dpkg -i smartsort_1.0.3_all.deb
+sudo apt-get install -f   # resolve any missing dependencies
 ```
 
-The generated package is written to `build/deb/smartsort_<version>_all.deb`.
+## Uninstalling
+
+```bash
+sudo dpkg -r smartsort
+```
+
+---
+
+## Building the .deb from Source
+
+Prerequisites: `dpkg-deb`, `python3-pyqt6`, `python3-watchdog`, `python3-notify2`
+
+```bash
+bash packaging/debian/build_deb.sh
+```
+
+Output: `build/deb/smartsort_1.0.3_all.deb`
+
+See [build.md](build.md) for detailed instructions.

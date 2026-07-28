@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+*.egg-info/
+dist/
+.eggs/
+
+# Pytest / testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+test_logs/
+pytest.log
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS files
+.DS_Store
+desktop.ini
+
+# Build / dist output
+build/deb/*.deb
+build/deb/*.changes
+build/deb/*.buildinfo
+dist/
+*.egg-info/
+
+# Debian packaging temp trees (created and cleaned by build_deb.sh)
+packaging/debian/smartsort_*_all/
+
+# Local config / secrets
+.env
+.env.*
+*.secret
+
+# Temp files
+*.tmp
+*.bak
+*.orig
+*.rej

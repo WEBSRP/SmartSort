@@ -14,7 +14,7 @@ When publishing a new release:
 2.  **Changelog Sync**:
     - Document all fixes, updates, and milestones inside [CHANGELOG.md](../CHANGELOG.md) under the release heading.
 3.  **Local Quality Control**:
-    - Verify all tests pass locally: `python3 -m pytest tests/`
+    - Verify all tests pass locally: `PYTHONPATH=. pytest`
     - Run formatting checks.
 4.  **Local Package Compile**:
     - Execute the Debian build script: `./packaging/debian/build_deb.sh`.
@@ -22,7 +22,8 @@ When publishing a new release:
 5.  **GitHub Release Tagging**:
     - Commit all files and tag the commit:
       ```bash
-      git tag -a v1.0.1 -m "Release v1.0.1"
-      git push origin v1.0.1
+      git tag -a vX.Y.Z -m "Release vX.Y.Z"
+      git push origin vX.Y.Z
       ```
     - GitHub Actions will run tests, compile the Debian release package, and upload the `.deb` artifact automatically.
+
