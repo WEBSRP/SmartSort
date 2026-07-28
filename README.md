@@ -116,7 +116,7 @@ Launch SmartSort from the Applications menu.
 # 🛠 Build from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/SmartSort.git
+git clone https://github.com/WEBSRP/SmartSort.git
 
 cd SmartSort
 
