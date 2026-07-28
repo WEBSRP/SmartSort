@@ -1453,6 +1453,10 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
         gui = SmartSortGUI()
         gui.config.set("autostart", True)
         
+        # Manually start monitor (suppressed during tests in __init__) so
+        # cleanup path can be exercised and there are no dangling threads.
+        gui.start_monitor()
+        
         # Ensure autostart manager uses temporary dir
         autostart_dir = temp_dir / "autostart"
         gui.autostart_manager = AutostartManager(autostart_dir=str(autostart_dir))
@@ -1488,8 +1492,9 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
                 gui.tray_icon.deleteLater()
             gui.close()
             gui.deleteLater()
-        # Process any pending cleanup events
-        qapp.processEvents()
+        # Flush all pending cleanup events
+        for _ in range(10):
+            qapp.processEvents()
 
 
 

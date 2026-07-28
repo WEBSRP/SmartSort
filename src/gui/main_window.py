@@ -134,16 +134,17 @@ class SmartSortGUI(QMainWindow):
         from PyQt6.QtCore import QTimer
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_dashboard_stats)
-        if not "PYTEST_CURRENT_TEST" in os.environ:
+        if "PYTEST_CURRENT_TEST" not in os.environ:
             self.status_timer.start(3000)
         
-        self.start_monitor()
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            self.start_monitor()
         
-        if self.tray_available and not "PYTEST_CURRENT_TEST" in os.environ:
+        if self.tray_available and "PYTEST_CURRENT_TEST" not in os.environ:
             QTimer.singleShot(2000, self.finish_startup)
             
         # Run startup verification and repair check on launch
-        if not "PYTEST_CURRENT_TEST" in os.environ:
+        if "PYTEST_CURRENT_TEST" not in os.environ:
             QTimer.singleShot(1000, self.verify_and_repair_startup_config)
 
     def setup_system_tray(self):
