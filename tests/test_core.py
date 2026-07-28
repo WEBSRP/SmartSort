@@ -1443,19 +1443,22 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
     # Mock sys.argv
     monkeypatch.setattr(sys, "argv", ["main.py"])
     
-    # Mock QMessageBox
+    # Mock ALL QMessageBox dialogs so no blocking modal is ever shown
     mock_question = MagicMock(return_value=QMessageBox.StandardButton.Yes)
     monkeypatch.setattr(QMessageBox, "question", mock_question)
+    monkeypatch.setattr(QMessageBox, "warning", MagicMock(return_value=QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "information", MagicMock(return_value=QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "critical", MagicMock(return_value=QMessageBox.StandardButton.Ok))
     
     gui = None
     try:
-        # Create GUI instance (partially mocked)
+        # Create GUI instance (partially mocked).
+        # Note: start_monitor() is intentionally NOT called here — the test
+        # is only exercising verify_and_repair_startup_config(), and starting
+        # a real MonitorThread/watchdog Observer would introduce race conditions
+        # and QMessageBox.warning() calls that block the headless CI runner.
         gui = SmartSortGUI()
         gui.config.set("autostart", True)
-        
-        # Manually start monitor (suppressed during tests in __init__) so
-        # cleanup path can be exercised and there are no dangling threads.
-        gui.start_monitor()
         
         # Ensure autostart manager uses temporary dir
         autostart_dir = temp_dir / "autostart"
@@ -1482,9 +1485,6 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
             gui.really_exit = True
             if hasattr(gui, "status_timer"):
                 gui.status_timer.stop()
-            if hasattr(gui, "monitor_thread"):
-                gui.monitor_thread.stop()
-                gui.monitor_thread.wait(5000)
             if hasattr(gui, "threadpool"):
                 gui.threadpool.waitForDone(1000)
             if hasattr(gui, "tray_icon"):
@@ -1492,7 +1492,7 @@ def test_verify_and_repair_startup_config(temp_dir, monkeypatch, qapp):
                 gui.tray_icon.deleteLater()
             gui.close()
             gui.deleteLater()
-        # Flush all pending cleanup events
+        # Flush all pending deferred-deletion events
         for _ in range(10):
             qapp.processEvents()
 
