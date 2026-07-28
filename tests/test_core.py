@@ -1276,7 +1276,7 @@ def test_tray_state_transitions():
     mock_tray.setToolTip.assert_called_with("SmartSort\nStatus: Monitoring\nFiles Processed: 16\nRules Active: 8")
 
 
-def test_ensure_user_icons_installed(tmp_path, monkeypatch):
+def test_ensure_user_icons_installed(tmp_path, monkeypatch, qapp):
     import os
     import main
     from unittest.mock import MagicMock
@@ -1498,16 +1498,16 @@ def test_xdg_paths_and_migration(tmp_path, monkeypatch):
     from src.utils.config import ConfigManager
     import json
 
-    # Mock XDG environment variables to point to tmp_path subdirs
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config_home"))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state_home"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data_home"))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache_home"))
+    # Mock XDG environment variables to point to tmp_path subdirs (must contain 'pytest')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "pytest_config_home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "pytest_state_home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "pytest_data_home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "pytest_cache_home"))
 
     # Test path compliance
-    assert AppPaths.config_dir() == tmp_path / "config_home" / "smartsort"
-    assert AppPaths.config_file() == tmp_path / "config_home" / "smartsort" / "config.json"
-    assert AppPaths.logs_dir() == tmp_path / "state_home" / "smartsort"
+    assert AppPaths.config_dir() == tmp_path / "pytest_config_home" / "smartsort"
+    assert AppPaths.config_file() == tmp_path / "pytest_config_home" / "smartsort" / "config.json"
+    assert AppPaths.logs_dir() == tmp_path / "pytest_state_home" / "smartsort"
 
     # Mock AppPaths._bundle_root to return a fake repo root in tmp_path
     fake_repo_root = tmp_path / "fake_repo"
