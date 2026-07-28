@@ -6,8 +6,9 @@
 
 Automatically detects, categorizes and organizes your downloads in real time.
 
-<!-- Hero Video -->
-https://github.com/YOUR_USERNAME/SmartSort/raw/main/assets/animation.mp4
+<p align="center">
+  <img src="assets/animation.gif" width="900" alt="SmartSort Demo">
+</p>
 
 ---
 
