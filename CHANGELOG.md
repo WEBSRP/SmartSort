@@ -4,6 +4,10 @@ All notable changes to the SmartSort project will be documented in this file.
 
 ## [1.0.3] - 2026-07-28
 
+### Added
+- **Clickable Desktop Notifications**: Added interactive desktop notifications in `src/core/notifications.py`. Clicking a success notification opens the destination directory in the system file manager and automatically highlights/selects the organized file using a 4-tier Linux Freedesktop fallback hierarchy (`org.freedesktop.FileManager1` DBus `ShowItems` -> `xdg-open` -> `gio open`).
+- **Smart Filename Cleanup**: Added intelligent filename cleanup feature in `src/core/filename_cleanup.py`. Automatically detects and renames generic, meaningless (`download`, `image`, `1`, `IMG_0001`), or excessively long filenames before categorizing and moving files. Features source domain extraction from extended attributes (`user.xdg.referrer.url` / `origin.url`), CDN domain mapping, intelligent word-boundary truncation, category fallback names, and complete extension preservation. Fully configurable via Settings (`smart_filename_cleanup`, `filename_min_length`, `filename_max_length`) and disabled by default.
+
 ### Fixed
 - **CI Headless Hang (Root Cause)**: `start_monitor()` called `QMessageBox.warning()` when
   the configured downloads folder did not exist on GitHub-hosted runners (`/home/runner/Downloads`

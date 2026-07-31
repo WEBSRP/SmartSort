@@ -24,25 +24,10 @@ def run_daemon():
         
     logger.info(f"Daemon mode started. Monitoring downloads folder: {watch_folder}")
     
-    notifications_enabled = False
-    if config.get("enable_notifications"):
-        try:
-            import notify2
-            notify2.init("SmartSort")
-            notifications_enabled = True
-        except Exception as e:
-            logger.error(f"Could not initialize notifications in daemon: {e}")
-
     def on_new_file(file_path):
         logger.info(f"Daemon detected file: {file_path}")
         result, info = organizer.process_file(file_path, user_approved=True)
         logger.info(f"Daemon processed file {file_path}. Result: {result}, Info: {info}")
-        if notifications_enabled:
-            try:
-                n = notify2.Notification("SmartSort Daemon", f"Processed: {os.path.basename(file_path)}\nResult: {result}")
-                n.show()
-            except Exception:
-                pass
 
     monitor = FileMonitor(watch_folder, organizer, on_new_file)
     monitor.start()

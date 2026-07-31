@@ -99,7 +99,7 @@ def test_duplicate_detection(temp_dir):
     organizer = FileOrganizer(MockConfig(), SmartSortLogger(log_dir="test_logs"))
     
     # Mock get_destination_path to return dst_file
-    organizer.get_destination_path = lambda f, c: str(dst_file)
+    organizer.get_destination_path = lambda f, c, **kwargs: str(dst_file)
     
     result, info = organizer.process_file(str(src_file))
     assert result == "DUPLICATE"
@@ -137,7 +137,7 @@ def test_conflict_policy_rename(temp_dir):
             return default
             
     organizer = FileOrganizer(MockConfig(), SmartSortLogger(log_dir="test_logs"))
-    organizer.get_destination_path = lambda f, c: str(dst)
+    organizer.get_destination_path = lambda f, c, **kwargs: str(dst)
     
     result, info = organizer.process_file(str(src))
     assert result == "SUCCESS"
@@ -205,7 +205,7 @@ def test_zero_byte_file_handling(temp_dir):
             return default
             
     organizer = FileOrganizer(MockConfig(), SmartSortLogger(log_dir="test_logs"))
-    organizer.get_destination_path = lambda f, c: str(dest_dir / "empty.txt")
+    organizer.get_destination_path = lambda f, c, **kwargs: str(dest_dir / "empty.txt")
     
     import time
     start = time.time()
@@ -315,7 +315,7 @@ def test_error_recovery_and_source_preservation(temp_dir):
             return default
             
     organizer = FileOrganizer(MockConfig(), SmartSortLogger(log_dir="test_logs"))
-    organizer.get_destination_path = lambda f, c: "/nonexistent_dir_perm_denied/src.txt"
+    organizer.get_destination_path = lambda f, c, **kwargs: "/nonexistent_dir_perm_denied/src.txt"
     
     result, info = organizer.process_file(str(src))
     assert result == "ERROR"

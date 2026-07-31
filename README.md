@@ -88,7 +88,37 @@ Downloads
 ⚙ Packages
 ```
 
+<<<<<<< HEAD
 No manual sorting.
+=======
+---
+
+# ⚡ Features
+
+- 📂 Real-time download monitoring
+- 📄 Automatic file categorization
+- 🧹 Smart Filename Cleanup (renames generic/meaningless filenames)
+- 🎯 Custom sorting rules
+- 📦 Duplicate detection
+- 🖥 Modern PyQt6 desktop interface
+- ⚙ System tray integration
+- 🚀 Lightweight and fast
+- 🐧 Native Debian package
+
+---
+
+# 🎬 Demo
+
+The animation above shows SmartSort working in real time.
+
+✔ Detects a new file
+
+✔ Identifies its category
+
+✔ Organizes it automatically
+
+No manual dragging.
+
 
 No clutter.
 
@@ -111,7 +141,57 @@ Just download and continue working.
 
 ---
 
+<<<<<<< HEAD
 # ⚡ Installation
+=======
+# 🧹 Smart Filename Cleanup
+
+Automatically detects and renames generic, meaningless, or excessively long filenames before categorizing and moving them.
+
+### Examples
+
+- `_.jpg` → `reddit.jpg` (or `image.jpg` fallback)
+- `download.pdf` → `github.pdf` (or `document.pdf` fallback)
+- `IMG_0001.png` → `pinterest.png`
+- `53+ Trèfle à quatre feuilles Wallpapers...jpeg` → `wallpaperflare.jpeg`
+
+### Configuration
+
+Enable or disable in **Settings → Advanced Settings → Enable Smart Filename Cleanup** or in `config.json`:
+
+```json
+{
+    "smart_filename_cleanup": true,
+    "filename_min_length": 4,
+    "filename_max_length": 80
+}
+```
+
+### Limitations
+
+- Source website detection uses local extended attributes (`user.xdg.referrer.url` / `user.xdg.origin.url`) set by Linux browsers (Chrome, Firefox). If no metadata is present, it uses intelligent extension-based category fallbacks (`image.jpg`, `document.pdf`, `video.mp4`, etc.).
+- Network requests are never performed to fetch metadata.
+
+---
+
+# 🔔 Clickable Notifications
+
+When a file is successfully processed, SmartSort sends a desktop notification.
+
+Clicking the notification automatically opens the destination directory in your default desktop file manager (Nautilus, Dolphin, Thunar, etc.) and highlights/selects the organized file.
+
+### Highlighting Hierarchy
+
+1. **`org.freedesktop.FileManager1` DBus `ShowItems`** (highlights the file in GNOME, KDE, etc.)
+2. **`xdg-open`** (opens the parent directory as a fallback)
+3. **`gio open`** (opens the parent directory as a secondary fallback)
+
+Notifications reuse the existing **Enable Desktop Notifications** setting in Settings.
+
+---
+
+# 📦 Installation
+>>>>>>> 57346ee (feat: add Smart Filename Cleanup and notification improvements)
 
 Download the latest Debian package from the **Releases** page.
 

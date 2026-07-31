@@ -116,7 +116,10 @@ class ConfigManager:
             "rules": list,
             "start_minimized": bool,
             "autostart": bool,
-            "theme": str
+            "theme": str,
+            "smart_filename_cleanup": bool,
+            "filename_min_length": int,
+            "filename_max_length": int
         }
         for key, expected_type in required_keys.items():
             if key in config:
@@ -184,7 +187,10 @@ class ConfigManager:
             "rules": [],
             "start_minimized": False,
             "autostart": False,
-            "theme": "system"
+            "theme": "system",
+            "smart_filename_cleanup": False,
+            "filename_min_length": 4,
+            "filename_max_length": 80
         }
 
         # 2. Try to load config.default.json to override defaults
@@ -241,7 +247,10 @@ class ConfigManager:
             "rules": list,
             "start_minimized": bool,
             "autostart": bool,
-            "theme": str
+            "theme": str,
+            "smart_filename_cleanup": bool,
+            "filename_min_length": int,
+            "filename_max_length": int
         }
 
         if config_loaded_successfully:
@@ -313,7 +322,10 @@ class ConfigManager:
                 "rules": [],
                 "start_minimized": False,
                 "autostart": False,
-                "theme": "system"
+                "theme": "system",
+                "smart_filename_cleanup": False,
+                "filename_min_length": 4,
+                "filename_max_length": 80
             }
             val = defaults.get(key)
             if key == "large_file_threshold_gb" and isinstance(val, (int, float)) and val < 10000:

@@ -38,10 +38,16 @@ Below are the options managed inside `config.json`:
     "rules": [],
     "start_minimized": false,
     "autostart": false,
-    "theme": "system"
+    "theme": "system",
+    "smart_filename_cleanup": false,
+    "filename_min_length": 4,
+    "filename_max_length": 80
 }
 ```
 
 - **downloads_folder**: Paths starting with `~` are expanded automatically at runtime.
 - **large_file_threshold_gb**: Size threshold in bytes (e.g. 2.5 GB).
 - **conflict_resolution**: Decides handling of filename collisions. Supported policies: `rename` (appends incremental numeric tags), `overwrite`, or `skip`.
+- **smart_filename_cleanup**: Boolean setting to enable/disable automatic cleanup of generic, short, or excessively long filenames before categorizing. Disabled by default (`false`).
+- **filename_min_length**: Minimum acceptable filename length (default `4`). Filenames shorter than this trigger cleanup.
+- **filename_max_length**: Maximum acceptable filename length (default `80`). Filenames longer than this are truncated at word boundaries during cleanup.

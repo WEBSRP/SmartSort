@@ -9,6 +9,9 @@
   "autostart": false,
   "theme": "system",
   "conflict_resolution": "rename",
+  "smart_filename_cleanup": false,
+  "filename_min_length": 4,
+  "filename_max_length": 80,
   "rules": [],
   "categories": {
     "Videos": {

@@ -1455,6 +1455,10 @@ WantedBy=default.target
         self.cmb_conflict.setCurrentText(str(conflict_val))
         adv_layout.addRow("Collision Policy:", self.cmb_conflict)
         
+        self.chk_smart_cleanup = QCheckBox("Enable Smart Filename Cleanup (rename generic/meaningless filenames)")
+        self.chk_smart_cleanup.setChecked(bool(self.config.get("smart_filename_cleanup", False)))
+        adv_layout.addRow(self.chk_smart_cleanup)
+        
         layout.addWidget(group_adv)
         
         # Save Button
@@ -1493,6 +1497,9 @@ WantedBy=default.target
             self.config.set("enable_duplicate_detection", self.chk_dup.isChecked())
             self.config.set("conflict_resolution", self.cmb_conflict.currentText())
             self.config.set("start_minimized", self.chk_start_minimized.isChecked())
+            self.config.set("smart_filename_cleanup", self.chk_smart_cleanup.isChecked())
+            # Update the organizer's cleanup instance to reflect the new setting
+            self.organizer.filename_cleanup.enabled = self.chk_smart_cleanup.isChecked()
             
             prev_autostart = self.config.get("autostart", False)
             new_autostart = self.chk_autostart.isChecked()

@@ -7,12 +7,20 @@ from .utils.config import ConfigManager
 from .utils.logger import SmartSortLogger
 from src.rules.manager import RuleManager
 from src.rules.engine import RuleEngine
+from src.core.filename_cleanup import FilenameCleanup
+from src.core.notifications import NotificationManager
 
 class FileOrganizer:
     def __init__(self, config_manager: ConfigManager, logger: SmartSortLogger):
         self.config = config_manager
         self.logger = logger
         self.rule_manager = RuleManager(config_manager)
+        self.notification_manager = NotificationManager(config_manager, logger)
+        self.filename_cleanup = FilenameCleanup(
+            enabled=config_manager.get("smart_filename_cleanup", False),
+            min_length=config_manager.get("filename_min_length", 4),
+            max_length=config_manager.get("filename_max_length", 80),
+        )
 
     def get_category(self, file_path: str) -> str:
         engine = RuleEngine(self.rule_manager.rules)
@@ -25,7 +33,7 @@ class FileOrganizer:
             return rule.name
         return "Others"
 
-    def get_destination_path(self, file_path: str, category: str = None) -> str:
+    def get_destination_path(self, file_path: str, category: str = None, override_filename: str = None) -> str:
         engine = RuleEngine(self.rule_manager.rules)
         try:
             file_size = os.path.getsize(file_path)
@@ -33,9 +41,13 @@ class FileOrganizer:
             file_size = None
         rule, relative_dest = engine.evaluate_file(file_path, file_size)
         
-        filename = os.path.basename(file_path)
+        original_filename = os.path.basename(file_path)
+        filename = override_filename or original_filename
         if rule and "{filename}" in rule.destination:
-            pass
+            # If an override filename is provided, replace the already-expanded
+            # original filename in the destination path with the clean name.
+            if override_filename and original_filename in relative_dest:
+                relative_dest = relative_dest.replace(original_filename, filename, 1)
         else:
             relative_dest = os.path.join(relative_dest, filename)
             
@@ -53,9 +65,19 @@ class FileOrganizer:
         if not os.path.exists(file_path):
             return "SKIPPED", "File already processed or removed"
 
+        # Smart Filename Cleanup (evaluated before categorization)
+        override_filename = None
+        original_basename = os.path.basename(file_path)
+        if self.filename_cleanup.needs_cleanup(original_basename):
+            clean_name = self.filename_cleanup.generate_clean_name(file_path)
+            override_filename = clean_name
+            self.logger.info(
+                f"Smart Cleanup: '{original_basename}' → '{clean_name}'"
+            )
+
         category = self.get_category(file_path)
         try:
-            dest_path = self.get_destination_path(file_path, category)
+            dest_path = self.get_destination_path(file_path, category, override_filename=override_filename)
         except ValueError as e:
             return "ERROR", str(e)
         filename = os.path.basename(file_path)
@@ -104,6 +126,10 @@ class FileOrganizer:
             try:
                 os.remove(file_path)
                 self.logger.log_action(filename, file_path, dest_path, "TRANSFER_SUCCESS")
+                try:
+                    self.notification_manager.send_success_notification(dest_path)
+                except Exception as notif_err:
+                    self.logger.error(f"Notification error ignored during sorting: {notif_err}")
                 return "SUCCESS", dest_path
             except Exception as e:
                 self.logger.log_action(filename, file_path, dest_path, "DELETE_ORIGINAL_FAILED", "ERROR", str(e))
