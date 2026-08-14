@@ -184,8 +184,8 @@ def test_processed_files_cleanup():
     import time
     
     handler = DownloadHandler(None, lambda x: None)
-    handler.processed_files["/path/to/old"] = time.time() - 301
-    handler.processed_files["/path/to/new"] = time.time()
+    handler.processed_files["/path/to/old"] = (time.time() - 301, 12345, 1)
+    handler.processed_files["/path/to/new"] = (time.time(), 67890, 1)
     
     assert len(handler.processed_files) == 2
     handler._cleanup_expired()
