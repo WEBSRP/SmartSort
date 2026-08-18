@@ -1554,3 +1554,147 @@ def test_xdg_paths_and_migration(tmp_path, monkeypatch):
     assert not legacy_log_file.exists()
     assert not legacy_logs_dir.exists()
 
+
+def test_directory_organizer_gui_tab_and_worker(temp_dir, monkeypatch, qapp):
+    """Test Directory Organizer tab layout, configuration persistence, input validation, and worker signals."""
+    from unittest.mock import MagicMock
+    from PyQt6.QtWidgets import QMessageBox
+    from src.gui.main_window import SmartSortGUI, DirectoryOrganizerWorker
+    from src.utils.paths import AppPaths
+    from src.core.directory_organizer import DirectoryOrganizer, OrganizeResult, DirectoryPreviewSummary
+
+    # Isolate XDG directories
+    fake_config_dir = temp_dir / "config"
+    fake_config_dir.mkdir()
+    fake_logs_dir = temp_dir / "logs"
+    fake_logs_dir.mkdir()
+    fake_data_dir = temp_dir / "data"
+    fake_data_dir.mkdir()
+
+    monkeypatch.setattr(AppPaths, "config_file", lambda: fake_config_dir / "config.json")
+    monkeypatch.setattr(AppPaths, "logs_dir", lambda: fake_logs_dir)
+    monkeypatch.setattr(AppPaths, "data_dir", lambda: fake_data_dir)
+
+    mock_warning = MagicMock()
+    mock_critical = MagicMock()
+    mock_info = MagicMock()
+    mock_question = MagicMock(return_value=QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", mock_warning)
+    monkeypatch.setattr(QMessageBox, "critical", mock_critical)
+    monkeypatch.setattr(QMessageBox, "information", mock_info)
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+
+    gui = SmartSortGUI()
+    try:
+        # 1. Tab exists and is at index 1
+        assert gui.tabs.count() >= 2
+        assert gui.tabs.tabText(1) == "Directory Organizer"
+
+        # 2. Widgets exist
+        assert hasattr(gui, "txt_target_dir")
+        assert hasattr(gui, "btn_browse_dir")
+        assert hasattr(gui, "chk_recursive")
+        assert hasattr(gui, "chk_gen_report")
+        assert hasattr(gui, "btn_preview")
+        assert hasattr(gui, "btn_organize")
+        assert hasattr(gui, "btn_cancel_organize")
+        assert hasattr(gui, "progress_organize")
+        assert hasattr(gui, "lbl_organize_status")
+        assert hasattr(gui, "txt_organize_summary")
+        assert hasattr(gui, "btn_open_target_folder")
+        assert hasattr(gui, "btn_open_arrangement_md")
+
+        # 3. Checkbox changes update config
+        gui.chk_recursive.setChecked(True)
+        assert gui.config.get("dir_organizer_recursive") is True
+        gui.chk_recursive.setChecked(False)
+        assert gui.config.get("dir_organizer_recursive") is False
+
+        gui.chk_gen_report.setChecked(False)
+        assert gui.config.get("dir_organizer_generate_markdown") is False
+        gui.chk_gen_report.setChecked(True)
+        assert gui.config.get("dir_organizer_generate_markdown") is True
+
+        # 4. Input validation
+        # Empty path -> warning
+        gui.txt_target_dir.setText("")
+        assert gui._validate_organizer_input() is None
+        mock_warning.assert_called()
+        mock_warning.reset_mock()
+
+        # Non-existent path -> warning
+        gui.txt_target_dir.setText(str(temp_dir / "non_existent_folder_xyz"))
+        assert gui._validate_organizer_input() is None
+        mock_warning.assert_called()
+        mock_warning.reset_mock()
+
+        # Protected root -> critical
+        gui.txt_target_dir.setText("/etc")
+        assert gui._validate_organizer_input() is None
+        mock_critical.assert_called()
+        mock_critical.reset_mock()
+
+        # Valid directory
+        work_dir = temp_dir / "work"
+        work_dir.mkdir()
+        gui.txt_target_dir.setText(str(work_dir))
+        assert gui._validate_organizer_input() == str(work_dir.resolve())
+
+        # 5. Worker signals test (Preview & Organize)
+        (work_dir / "sample.pdf").write_bytes(b"PDF sample content")
+        (work_dir / "image.jpg").write_bytes(b"JPG sample content")
+
+        # Test preview worker execution directly
+        preview_worker = DirectoryOrganizerWorker(
+            organizer=gui.dir_organizer,
+            root_dir=str(work_dir),
+            mode="preview",
+            recursive=False
+        )
+        preview_results = []
+        preview_worker.signals.preview_ready.connect(lambda s: preview_results.append(s))
+        preview_worker.run()
+
+        assert len(preview_results) == 1
+        summary = preview_results[0]
+        assert isinstance(summary, DirectoryPreviewSummary)
+        assert summary.total_files == 2
+
+        # Test organize worker execution directly
+        organize_worker = DirectoryOrganizerWorker(
+            organizer=gui.dir_organizer,
+            root_dir=str(work_dir),
+            mode="organize",
+            recursive=False,
+            generate_report=True
+        )
+        progress_events = []
+        finished_results = []
+        organize_worker.signals.progress.connect(lambda p, t, f: progress_events.append((p, t, f)))
+        organize_worker.signals.finished.connect(lambda r, p: finished_results.append((r, p)))
+        organize_worker.run()
+
+        assert len(finished_results) == 1
+        result, report_path = finished_results[0]
+        assert isinstance(result, OrganizeResult)
+        assert result.success_count == 2
+        assert report_path != ""
+        assert os.path.exists(report_path)
+
+        # 6. Test worker cancellation
+        cancel_worker = DirectoryOrganizerWorker(
+            organizer=gui.dir_organizer,
+            root_dir=str(work_dir),
+            mode="organize"
+        )
+        cancel_worker.cancel()
+        cancelled_results = []
+        cancel_worker.signals.finished.connect(lambda r, p: cancelled_results.append(r))
+        cancel_worker.run()
+        assert len(cancelled_results) == 1
+        assert cancelled_results[0].cancelled is True
+
+    finally:
+        gui.close()
+
+

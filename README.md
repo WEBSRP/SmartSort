@@ -88,38 +88,7 @@ Downloads
 ⚙ Packages
 ```
 
-<<<<<<< HEAD
 No manual sorting.
-=======
----
-
-# ⚡ Features
-
-- 📂 Real-time download monitoring
-- 📄 Automatic file categorization
-- 🧹 Smart Filename Cleanup (renames generic/meaningless filenames)
-- 🎯 Custom sorting rules
-- 📦 Duplicate detection
-- 🖥 Modern PyQt6 desktop interface
-- ⚙ System tray integration
-- 🚀 Lightweight and fast
-- 🐧 Native Debian package
-
----
-
-# 🎬 Demo
-
-The animation above shows SmartSort working in real time.
-
-✔ Detects a new file
-
-✔ Identifies its category
-
-✔ Organizes it automatically
-
-No manual dragging.
-
-
 No clutter.
 
 Just download and continue working.
@@ -141,9 +110,6 @@ Just download and continue working.
 
 ---
 
-<<<<<<< HEAD
-# ⚡ Installation
-=======
 # 🧹 Smart Filename Cleanup
 
 Automatically detects and renames generic, meaningless, or excessively long filenames before categorizing and moving them.
@@ -191,12 +157,11 @@ Notifications reuse the existing **Enable Desktop Notifications** setting in Set
 ---
 
 # 📦 Installation
->>>>>>> 57346ee (feat: add Smart Filename Cleanup and notification improvements)
 
 Download the latest Debian package from the **Releases** page.
 
 ```bash
-sudo dpkg -i smartsort_1.0.3_all.deb
+sudo dpkg -i smartsort_1.0.6_all.deb
 
 sudo apt-get install -f
 ```

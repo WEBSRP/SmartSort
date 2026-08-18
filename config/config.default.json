@@ -12,6 +12,9 @@
   "smart_filename_cleanup": false,
   "filename_min_length": 4,
   "filename_max_length": 80,
+  "dir_organizer_last_path": "",
+  "dir_organizer_recursive": false,
+  "dir_organizer_generate_markdown": true,
   "rules": [],
   "categories": {
     "Videos": {

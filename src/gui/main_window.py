@@ -3,12 +3,14 @@ from pathlib import Path
 import os
 import re
 import uuid
+import threading
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
                              QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                              QTextEdit, QTableWidget, QTableWidgetItem, 
                              QFileDialog, QSpinBox, QCheckBox, QMessageBox,
                              QFormLayout, QGroupBox, QLineEdit, QComboBox, 
-                             QDialog, QDialogButtonBox, QSystemTrayIcon, QMenu, QFrame)
+                             QDialog, QDialogButtonBox, QSystemTrayIcon, QMenu, QFrame,
+                             QProgressBar)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject, QEvent
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
 from datetime import datetime
@@ -18,6 +20,64 @@ from src.utils.logger import SmartSortLogger
 from src.organizer import FileOrganizer
 from src.monitor import FileMonitor
 from src.utils.packaging import detect_package_type, PackageType, Capability, has_capability
+from src.core.directory_organizer import (
+    DirectoryOrganizer, OrganizePlan, OrganizeResult,
+    DirectoryPreviewSummary, OperationStatus
+)
+
+class DirectoryOrganizerSignals(QObject):
+    progress = pyqtSignal(int, int, str)       # (processed, total, current_file)
+    preview_ready = pyqtSignal(object)         # (DirectoryPreviewSummary)
+    finished = pyqtSignal(object, str)         # (OrganizeResult, report_path)
+    error = pyqtSignal(str)                    # (error_message)
+
+class DirectoryOrganizerWorker(QRunnable):
+    def __init__(self, organizer: DirectoryOrganizer, root_dir: str, mode: str = "organize",
+                 recursive: bool = False, generate_report: bool = True):
+        super().__init__()
+        self.organizer = organizer
+        self.root_dir = root_dir
+        self.mode = mode
+        self.recursive = recursive
+        self.generate_report = generate_report
+        self.signals = DirectoryOrganizerSignals()
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def run(self):
+        try:
+            if self.mode == "preview":
+                summary = self.organizer.preview(self.root_dir, recursive=self.recursive)
+                self.signals.preview_ready.emit(summary)
+            elif self.mode == "organize":
+                files = self.organizer.scan(self.root_dir, recursive=self.recursive)
+                if self.cancel_event.is_set():
+                    res = OrganizeResult(records=[], cancelled=True)
+                    self.signals.finished.emit(res, "")
+                    return
+                plan = self.organizer.plan(self.root_dir, files)
+                if self.cancel_event.is_set():
+                    res = OrganizeResult(records=[], cancelled=True)
+                    self.signals.finished.emit(res, "")
+                    return
+
+                def progress_cb(processed, total, cur_file):
+                    self.signals.progress.emit(processed, total, cur_file)
+
+                def cancel_check():
+                    return self.cancel_event.is_set()
+
+                result = self.organizer.execute(plan, progress_callback=progress_cb,
+                                                cancel_check=cancel_check)
+                report_path = ""
+                if self.generate_report and (result.success_count > 0 or result.collision_count > 0
+                                             or result.duplicate_count > 0 or result.error_count > 0):
+                    report_path = self.organizer.generate_report(self.root_dir, result)
+                self.signals.finished.emit(result, report_path)
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
 class WorkerSignals(QObject):
     finished = pyqtSignal(str, str, str) # file_path, result, info
@@ -110,6 +170,9 @@ class SmartSortGUI(QMainWindow):
         self.config = ConfigManager()
         self.logger = SmartSortLogger()
         self.organizer = FileOrganizer(self.config, self.logger)
+        self.dir_organizer = DirectoryOrganizer(self.config, self.logger)
+        self.active_dir_worker = None
+        self.last_report_path = ""
         from src.utils.autostart import AutostartManager
         self.autostart_manager = AutostartManager(self.logger)
         self.threadpool = QThreadPool()
@@ -522,9 +585,19 @@ class SmartSortGUI(QMainWindow):
             QScrollBar::handle:horizontal:hover {
                 background: #555555;
             }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                border: none;
-                background: none;
+            QProgressBar {
+                border: 1px solid #333333;
+                border-radius: 6px;
+                text-align: center;
+                background-color: #181818;
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: bold;
+                height: 18px;
+            }
+            QProgressBar::chunk {
+                background-color: #3584e4;
+                border-radius: 5px;
             }
             """
         else:
@@ -736,6 +809,20 @@ class SmartSortGUI(QMainWindow):
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
                 border: none;
                 background: none;
+            }
+            QProgressBar {
+                border: 1px solid #dcdcdc;
+                border-radius: 6px;
+                text-align: center;
+                background-color: #f0f0f0;
+                color: #2e3436;
+                font-size: 11px;
+                font-weight: bold;
+                height: 18px;
+            }
+            QProgressBar::chunk {
+                background-color: #3584e4;
+                border-radius: 5px;
             }
             """
         self.setStyleSheet(qss)
@@ -1088,6 +1175,16 @@ WantedBy=default.target
                     except Exception:
                         pass
         else:
+            if hasattr(self, "active_dir_worker") and self.active_dir_worker:
+                try:
+                    self.active_dir_worker.cancel()
+                except Exception:
+                    pass
+            if hasattr(self, "threadpool"):
+                try:
+                    self.threadpool.waitForDone(2000)
+                except Exception:
+                    pass
             if hasattr(self, "monitor_thread"):
                 try:
                     self.monitor_thread.stop()
@@ -1109,18 +1206,21 @@ WantedBy=default.target
         self.setCentralWidget(self.tabs)
         
         self.tab_dashboard = QWidget()
+        self.tab_organizer = QWidget()
         self.tab_logs = QWidget()
         self.tab_rules = QWidget()
         self.tab_settings = QWidget()
         self.tab_tester = QWidget()
         
         self.tabs.addTab(self.tab_dashboard, "Dashboard")
+        self.tabs.addTab(self.tab_organizer, "Directory Organizer")
         self.tabs.addTab(self.tab_logs, "Logs")
         self.tabs.addTab(self.tab_rules, "Rules")
         self.tabs.addTab(self.tab_settings, "Settings")
         self.tabs.addTab(self.tab_tester, "Rule Tester")
         
         self.setup_dashboard()
+        self.setup_directory_organizer()
         self.setup_logs()
         self.setup_settings()
         self.setup_rules()
@@ -1182,6 +1282,329 @@ WantedBy=default.target
         main_layout.addWidget(self.log_display)
         
         self.tab_dashboard.setLayout(main_layout)
+
+    def setup_directory_organizer(self):
+        from PyQt6.QtWidgets import QFrame, QProgressBar
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header
+        lbl_header = QLabel("Directory Organizer")
+        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
+        main_layout.addWidget(lbl_header)
+        
+        # Target Directory Card
+        dir_card = QFrame()
+        dir_card.setProperty("class", "Card")
+        dir_layout = QVBoxLayout(dir_card)
+        dir_layout.setSpacing(8)
+        dir_layout.setContentsMargins(12, 12, 12, 12)
+        
+        lbl_select = QLabel("Select Directory to Organize:")
+        lbl_select.setStyleSheet("font-weight: bold;")
+        dir_layout.addWidget(lbl_select)
+        
+        dir_input_layout = QHBoxLayout()
+        self.txt_target_dir = QLineEdit()
+        self.txt_target_dir.setPlaceholderText("/path/to/directory")
+        last_path = self.config.get("dir_organizer_last_path", "")
+        self.txt_target_dir.setText(last_path)
+        self.btn_browse_dir = QPushButton("Browse...")
+        dir_input_layout.addWidget(self.txt_target_dir)
+        dir_input_layout.addWidget(self.btn_browse_dir)
+        dir_layout.addLayout(dir_input_layout)
+        
+        options_layout = QHBoxLayout()
+        self.chk_recursive = QCheckBox("Include subdirectories (Recursive)")
+        self.chk_recursive.setChecked(self.config.get("dir_organizer_recursive", False))
+        self.chk_gen_report = QCheckBox("Generate Arrangement Index (SmartSort_Arrangement.md)")
+        self.chk_gen_report.setChecked(self.config.get("dir_organizer_generate_markdown", True))
+        options_layout.addWidget(self.chk_recursive)
+        options_layout.addWidget(self.chk_gen_report)
+        options_layout.addStretch()
+        dir_layout.addLayout(options_layout)
+        
+        main_layout.addWidget(dir_card)
+        
+        # Action Controls Layout
+        actions_layout = QHBoxLayout()
+        self.btn_preview = QPushButton("Preview / Dry Run")
+        self.btn_organize = QPushButton("Organize Directory")
+        self.btn_organize.setObjectName("primary")
+        self.btn_cancel_organize = QPushButton("Cancel")
+        self.btn_cancel_organize.setEnabled(False)
+        
+        actions_layout.addWidget(self.btn_preview)
+        actions_layout.addWidget(self.btn_organize)
+        actions_layout.addWidget(self.btn_cancel_organize)
+        actions_layout.addStretch()
+        main_layout.addLayout(actions_layout)
+        
+        # Progress Card
+        progress_card = QFrame()
+        progress_card.setProperty("class", "Card")
+        prog_layout = QVBoxLayout(progress_card)
+        prog_layout.setSpacing(6)
+        prog_layout.setContentsMargins(12, 12, 12, 12)
+        
+        self.lbl_organize_status = QLabel("Status: Ready")
+        self.lbl_organize_status.setStyleSheet("font-weight: bold;")
+        self.progress_organize = QProgressBar()
+        self.progress_organize.setRange(0, 100)
+        self.progress_organize.setValue(0)
+        self.progress_organize.setTextVisible(True)
+        self.lbl_organize_details = QLabel("No active operation")
+        self.lbl_organize_details.setStyleSheet("color: #888888; font-size: 11px;")
+        
+        prog_layout.addWidget(self.lbl_organize_status)
+        prog_layout.addWidget(self.progress_organize)
+        prog_layout.addWidget(self.lbl_organize_details)
+        main_layout.addWidget(progress_card)
+        
+        # Results & Preview Card
+        results_card = QFrame()
+        results_card.setProperty("class", "Card")
+        res_layout = QVBoxLayout(results_card)
+        res_layout.setSpacing(8)
+        res_layout.setContentsMargins(12, 12, 12, 12)
+        
+        self.lbl_results_title = QLabel("Execution Summary:")
+        self.lbl_results_title.setStyleSheet("font-weight: bold;")
+        res_layout.addWidget(self.lbl_results_title)
+        
+        self.txt_organize_summary = QTextEdit()
+        self.txt_organize_summary.setReadOnly(True)
+        self.txt_organize_summary.setStyleSheet("font-family: 'Courier New', monospace; font-size: 11px;")
+        res_layout.addWidget(self.txt_organize_summary)
+        
+        btn_results_layout = QHBoxLayout()
+        self.btn_open_target_folder = QPushButton("Open Folder")
+        self.btn_open_target_folder.setEnabled(False)
+        self.btn_open_arrangement_md = QPushButton("Open Arrangement Report")
+        self.btn_open_arrangement_md.setEnabled(False)
+        btn_results_layout.addWidget(self.btn_open_target_folder)
+        btn_results_layout.addWidget(self.btn_open_arrangement_md)
+        btn_results_layout.addStretch()
+        res_layout.addLayout(btn_results_layout)
+        
+        main_layout.addWidget(results_card)
+        
+        self.tab_organizer.setLayout(main_layout)
+        
+        # Connect signals
+        self.btn_browse_dir.clicked.connect(self.on_browse_target_dir)
+        self.btn_preview.clicked.connect(self.on_preview_dir)
+        self.btn_organize.clicked.connect(self.on_organize_dir)
+        self.btn_cancel_organize.clicked.connect(self.on_cancel_organize)
+        self.btn_open_target_folder.clicked.connect(self.on_open_target_folder)
+        self.btn_open_arrangement_md.clicked.connect(self.on_open_arrangement_report)
+        self.chk_recursive.stateChanged.connect(self.on_dir_organizer_options_changed)
+        self.chk_gen_report.stateChanged.connect(self.on_dir_organizer_options_changed)
+        self.txt_target_dir.textChanged.connect(self.on_dir_organizer_options_changed)
+
+    def on_browse_target_dir(self):
+        cur = self.txt_target_dir.text().strip() or os.path.expanduser("~")
+        selected = QFileDialog.getExistingDirectory(self, "Select Directory to Organize", cur)
+        if selected:
+            self.txt_target_dir.setText(selected)
+            self.config.set("dir_organizer_last_path", selected)
+            self.config.save_config()
+
+    def on_dir_organizer_options_changed(self):
+        path = self.txt_target_dir.text().strip()
+        self.config.set("dir_organizer_last_path", path)
+        self.config.set("dir_organizer_recursive", self.chk_recursive.isChecked())
+        self.config.set("dir_organizer_generate_markdown", self.chk_gen_report.isChecked())
+        self.config.save_config()
+
+    def _validate_organizer_input(self):
+        target_dir = self.txt_target_dir.text().strip()
+        if not target_dir:
+            QMessageBox.warning(self, "Directory Organizer", "Please select a directory to organize.")
+            return None
+        target_dir = os.path.abspath(os.path.expanduser(target_dir))
+        if not os.path.exists(target_dir):
+            QMessageBox.warning(self, "Directory Organizer", f"Directory does not exist:\n{target_dir}")
+            return None
+        if not os.path.isdir(target_dir):
+            QMessageBox.warning(self, "Directory Organizer", f"Selected path is not a directory:\n{target_dir}")
+            return None
+        if target_dir in DirectoryOrganizer.PROTECTED_ROOTS:
+            QMessageBox.critical(self, "Directory Organizer", f"Cannot organize protected system directory:\n{target_dir}")
+            return None
+        return target_dir
+
+    def on_preview_dir(self):
+        target_dir = self._validate_organizer_input()
+        if not target_dir:
+            return
+            
+        self._set_organizer_running_ui(True)
+        self.lbl_organize_status.setText("Status: Scanning and planning preview...")
+        self.lbl_organize_details.setText(f"Scanning {target_dir}")
+        self.progress_organize.setRange(0, 0)
+        
+        worker = DirectoryOrganizerWorker(
+            organizer=self.dir_organizer,
+            root_dir=target_dir,
+            mode="preview",
+            recursive=self.chk_recursive.isChecked()
+        )
+        self.active_dir_worker = worker
+        worker.signals.preview_ready.connect(self.on_dir_worker_preview_ready)
+        worker.signals.error.connect(self.on_dir_worker_error)
+        self.threadpool.start(worker)
+
+    def on_organize_dir(self):
+        target_dir = self._validate_organizer_input()
+        if not target_dir:
+            return
+            
+        self._set_organizer_running_ui(True)
+        self.lbl_organize_status.setText("Status: Scanning files...")
+        self.lbl_organize_details.setText(f"Preparing to organize {target_dir}")
+        self.progress_organize.setRange(0, 0)
+        
+        worker = DirectoryOrganizerWorker(
+            organizer=self.dir_organizer,
+            root_dir=target_dir,
+            mode="organize",
+            recursive=self.chk_recursive.isChecked(),
+            generate_report=self.chk_gen_report.isChecked()
+        )
+        self.active_dir_worker = worker
+        worker.signals.progress.connect(self.on_dir_worker_progress)
+        worker.signals.finished.connect(self.on_dir_worker_finished)
+        worker.signals.error.connect(self.on_dir_worker_error)
+        self.threadpool.start(worker)
+
+    def on_cancel_organize(self):
+        if self.active_dir_worker:
+            self.active_dir_worker.cancel()
+            self.lbl_organize_status.setText("Status: Cancelling operation...")
+            self.btn_cancel_organize.setEnabled(False)
+
+    def _set_organizer_running_ui(self, running: bool):
+        self.btn_preview.setEnabled(not running)
+        self.btn_organize.setEnabled(not running)
+        self.btn_browse_dir.setEnabled(not running)
+        self.btn_cancel_organize.setEnabled(running)
+
+    def on_dir_worker_progress(self, processed: int, total: int, current_file: str):
+        if total > 0:
+            self.progress_organize.setRange(0, total)
+            self.progress_organize.setValue(processed)
+            pct = int((processed / total) * 100)
+            self.lbl_organize_status.setText(f"Status: Organizing... ({processed}/{total} - {pct}%)")
+        else:
+            self.progress_organize.setRange(0, 100)
+            self.progress_organize.setValue(0)
+            self.lbl_organize_status.setText("Status: Organizing...")
+        self.lbl_organize_details.setText(f"Processing: {current_file}")
+
+    def on_dir_worker_preview_ready(self, summary: DirectoryPreviewSummary):
+        self._set_organizer_running_ui(False)
+        self.active_dir_worker = None
+        self.progress_organize.setRange(0, 100)
+        self.progress_organize.setValue(100)
+        self.lbl_organize_status.setText("Status: Preview Complete (No files modified)")
+        self.lbl_organize_details.setText(f"Found {summary.total_files} file(s) eligible for organization")
+        
+        lines = [
+            "=== DRY-RUN PREVIEW SUMMARY ===",
+            f"Total Files Found: {summary.total_files}",
+            "",
+            "Category Breakdown:"
+        ]
+        if summary.category_counts:
+            for cat, count in sorted(summary.category_counts.items()):
+                lines.append(f"  • {cat}: {count} file(s)")
+        else:
+            lines.append("  (No files match active rules or all files are already organized)")
+            
+        lines.append("")
+        lines.append("Planned Moves (Sample):")
+        target_dir = self.txt_target_dir.text().strip()
+        for item in summary.items[:50]:
+            try:
+                rel_target = os.path.relpath(item.target_path, target_dir)
+            except ValueError:
+                rel_target = item.target_path
+            lines.append(f"  {os.path.basename(item.source_path)} -> {rel_target} [{item.category}]")
+        if len(summary.items) > 50:
+            lines.append(f"  ... and {len(summary.items) - 50} more file(s)")
+            
+        self.txt_organize_summary.setPlainText("\n".join(lines))
+        self.btn_open_target_folder.setEnabled(True)
+        self.btn_open_arrangement_md.setEnabled(False)
+
+    def on_dir_worker_finished(self, result: OrganizeResult, report_path: str):
+        self._set_organizer_running_ui(False)
+        self.active_dir_worker = None
+        self.progress_organize.setRange(0, 100)
+        self.progress_organize.setValue(100)
+        
+        status_text = "Status: Organization Complete"
+        if result.cancelled:
+            status_text = "Status: Operation Cancelled by User"
+        elif result.error_count > 0:
+            status_text = f"Status: Completed with {result.error_count} Error(s)"
+            
+        self.lbl_organize_status.setText(status_text)
+        self.lbl_organize_details.setText(
+            f"Moved: {result.success_count} | Renamed/Collisions: {result.collision_count} | "
+            f"Duplicates Preserved: {result.duplicate_count} | Skipped: {result.skip_count} | Errors: {result.error_count}"
+        )
+        
+        lines = [
+            "=== ORGANIZATION EXECUTION SUMMARY ===",
+            f"Status: {'CANCELLED' if result.cancelled else 'COMPLETED'}",
+            f"Verified & Moved: {result.success_count}",
+            f"Collisions Resolved (Renamed): {result.collision_count}",
+            f"Duplicates (Source Preserved): {result.duplicate_count}",
+            f"Skipped: {result.skip_count}",
+            f"Errors: {result.error_count}",
+            ""
+        ]
+        if report_path and os.path.exists(report_path):
+            lines.append(f"Arrangement Index: {report_path}")
+            lines.append("")
+            self.last_report_path = report_path
+            self.btn_open_arrangement_md.setEnabled(True)
+        else:
+            self.last_report_path = ""
+            self.btn_open_arrangement_md.setEnabled(False)
+            
+        if result.records:
+            lines.append("Operation Log (First 100):")
+            for r in result.records[:100]:
+                err_suffix = f" [ERROR: {r.error}]" if r.error else ""
+                lines.append(f"  [{r.status.value}] {os.path.basename(r.source)} -> {r.category}{err_suffix}")
+                
+        self.txt_organize_summary.setPlainText("\n".join(lines))
+        self.btn_open_target_folder.setEnabled(True)
+
+    def on_dir_worker_error(self, error_msg: str):
+        self._set_organizer_running_ui(False)
+        self.active_dir_worker = None
+        self.progress_organize.setRange(0, 100)
+        self.progress_organize.setValue(0)
+        self.lbl_organize_status.setText("Status: Error encountered")
+        self.lbl_organize_details.setText(f"Error: {error_msg}")
+        self.txt_organize_summary.setPlainText(f"Error during directory organization:\n{error_msg}")
+        QMessageBox.critical(self, "Directory Organizer Error", f"An error occurred:\n{error_msg}")
+
+    def on_open_target_folder(self):
+        target_dir = self.txt_target_dir.text().strip()
+        if target_dir and os.path.exists(target_dir):
+            from src.core.notifications import open_file_in_manager
+            open_file_in_manager(target_dir)
+
+    def on_open_arrangement_report(self):
+        if self.last_report_path and os.path.exists(self.last_report_path):
+            from src.core.notifications import open_file_in_manager
+            open_file_in_manager(self.last_report_path)
 
     def setup_logs(self):
         layout = QVBoxLayout()

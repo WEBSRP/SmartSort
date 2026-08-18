@@ -119,7 +119,10 @@ class ConfigManager:
             "theme": str,
             "smart_filename_cleanup": bool,
             "filename_min_length": int,
-            "filename_max_length": int
+            "filename_max_length": int,
+            "dir_organizer_last_path": str,
+            "dir_organizer_recursive": bool,
+            "dir_organizer_generate_markdown": bool
         }
         for key, expected_type in required_keys.items():
             if key in config:
@@ -190,7 +193,10 @@ class ConfigManager:
             "theme": "system",
             "smart_filename_cleanup": False,
             "filename_min_length": 4,
-            "filename_max_length": 80
+            "filename_max_length": 80,
+            "dir_organizer_last_path": "",
+            "dir_organizer_recursive": False,
+            "dir_organizer_generate_markdown": True
         }
 
         # 2. Try to load config.default.json to override defaults
@@ -250,7 +256,10 @@ class ConfigManager:
             "theme": str,
             "smart_filename_cleanup": bool,
             "filename_min_length": int,
-            "filename_max_length": int
+            "filename_max_length": int,
+            "dir_organizer_last_path": str,
+            "dir_organizer_recursive": bool,
+            "dir_organizer_generate_markdown": bool
         }
 
         if config_loaded_successfully:
@@ -325,7 +334,10 @@ class ConfigManager:
                 "theme": "system",
                 "smart_filename_cleanup": False,
                 "filename_min_length": 4,
-                "filename_max_length": 80
+                "filename_max_length": 80,
+                "dir_organizer_last_path": "",
+                "dir_organizer_recursive": False,
+                "dir_organizer_generate_markdown": True
             }
             val = defaults.get(key)
             if key == "large_file_threshold_gb" and isinstance(val, (int, float)) and val < 10000:

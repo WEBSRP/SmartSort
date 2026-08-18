@@ -2,7 +2,7 @@
 
 All notable changes to the SmartSort project will be documented in this file.
 
-## [1.0.4] - 2026-08-14
+## [1.0.6] - 2026-08-14
 
 ### Fixed
 - **Physical File Identity Tracking on MOVE (Bug Fix)**: Fixed an issue where `monitor.py` tracked processed files by string path for up to 5 minutes. Since MOVE operations delete the source file upon successful transfer, subsequent downloads reusing the same filename/path were silently dropped by watchdog deduplication or falsely reported as already processed. `monitor.py` now identifies files by `(timestamp, inode, device)` tuples using `os.stat()`. Duplicate watchdog events for the same physical file are deduplicated, while new files reusing a previous path are correctly identified and processed immediately.
