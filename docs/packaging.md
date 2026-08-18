@@ -1,6 +1,6 @@
 # Packaging
 
-SmartSort v1.0.3 is distributed exclusively as a **Debian package (`.deb`)**.
+SmartSort is distributed exclusively as a **Debian package (`.deb`)**.
 
 Supported distributions:
 - Debian 11 (Bullseye) and newer
@@ -28,7 +28,7 @@ The `.deb` package installs the following:
 ## Installing
 
 ```bash
-sudo dpkg -i smartsort_1.0.3_all.deb
+sudo dpkg -i smartsort_1.1.6_all.deb
 sudo apt-get install -f   # resolve any missing dependencies
 ```
 
@@ -48,6 +48,6 @@ Prerequisites: `dpkg-deb`, `python3-pyqt6`, `python3-watchdog`, `python3-notify2
 bash packaging/debian/build_deb.sh
 ```
 
-Output: `build/deb/smartsort_1.0.3_all.deb`
+Output: `build/deb/smartsort_1.1.6_all.deb`
 
 See [build.md](build.md) for detailed instructions.

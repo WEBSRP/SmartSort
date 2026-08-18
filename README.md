@@ -156,12 +156,24 @@ Notifications reuse the existing **Enable Desktop Notifications** setting in Set
 
 ---
 
+# 🗂 Directory Organizer
+
+Organize any folder on demand directly from the SmartSort Dashboard.
+
+- **Selective or Recursive Scanning**: Organize only root files or process entire directory trees.
+- **Dry-Run Preview**: Inspect planned moves and category distributions before modifying any files.
+- **6-Stage Copy-Verify-Delete Safety**: Cryptographic SHA-256 integrity verification guarantees zero data loss.
+- **Content Duplicate Preservation**: Duplicates with matching hashes are safely preserved untouched without overwriting destinations.
+- **Searchable Markdown Index**: Automatically generates `SmartSort_Arrangement.md` with offline clickable `file:///` links.
+
+---
+
 # 📦 Installation
 
 Download the latest Debian package from the **Releases** page.
 
 ```bash
-sudo dpkg -i smartsort_1.0.6_all.deb
+sudo dpkg -i smartsort_1.1.6_all.deb
 
 sudo apt-get install -f
 ```

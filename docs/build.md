@@ -33,7 +33,7 @@ PYTHONPATH=. python main.py
 
 ## Building the Debian Package
 
-SmartSort v1.0.3 is distributed as a `.deb` package only.
+SmartSort is distributed as a `.deb` package only.
 
 ```bash
 bash packaging/debian/build_deb.sh
@@ -45,7 +45,7 @@ The script:
 3. Calls `dpkg-deb --build` to produce `build/deb/smartsort_<ver>_all.deb`
 4. Cleans up the temporary tree
 
-Output: `build/deb/smartsort_1.0.3_all.deb`
+Output: `build/deb/smartsort_1.1.6_all.deb`
 
 ---
 

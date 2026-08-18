@@ -2,6 +2,20 @@
 
 All notable changes to the SmartSort project will be documented in this file.
 
+## [1.1.6] - 2026-08-18
+
+### Added
+- **Directory Organizer Feature**: Added a dedicated Dashboard tab and standalone core service (`src/core/directory_organizer.py`) enabling users to organize any selected folder on demand.
+  - **Directory Selection & Browsing**: Easily select and configure target folders with persistent configuration defaults (`dir_organizer_last_path`, `dir_organizer_recursive`, `dir_organizer_generate_markdown`).
+  - **Recursive & Non-Recursive Scanning**: Snapshot-based directory traversal supporting both shallow root-only scans and full subfolder recursion while safely ignoring hidden files/folders (`.git`, `.obsidian`, etc.), symlinks, and temporary download files.
+  - **Dry-Run Preview Mode**: Inspect planned file categories and destinations without performing any filesystem modifications.
+  - **Rigid 6-Stage Copy-Verify-Delete Safety Contract**: Files are transferred via `shutil.copy2`, verified for regular file attributes, size equality, and streaming 64KB SHA-256 cryptographic hash match before the original source file is removed. Incomplete or corrupted copies are immediately removed and source files preserved untouched.
+  - **Content Duplicate Preservation**: If a destination file already exists with identical SHA-256 content, the destination is never overwritten, the source is never deleted, and the operation is recorded as `DUPLICATE`.
+  - **Dynamic Collision Resolution**: Filename collisions with differing content are dynamically renamed (`_1`, `_2`) via `FileUtils.get_unique_path()`, verified for uniqueness, and recorded as `COLLISION_RESOLVED`.
+  - **Searchable Arrangement Index (`SmartSort_Arrangement.md`)**: Automatically generates an index at the organized directory root with category breakdowns, original-to-final path mappings, isolated duplicate records, and offline clickable `file:///` local URIs.
+  - **Thread-Safe Cancellation & Progress Monitoring**: Responsive background worker (`QThreadPool`/`QRunnable`) with real-time percentage progress, operation details, and safe thread cancellation.
+  - **Qt-Free Core Decoupling**: Core business logic in `src/core/directory_organizer.py` has zero Qt dependencies, enabling 100% deterministic headless testing and CI stability.
+
 ## [1.0.6] - 2026-08-14
 
 ### Fixed
