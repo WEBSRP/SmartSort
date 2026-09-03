@@ -14,6 +14,8 @@ from src.core.file_intelligence.context import (
     ExtractedMetadata,
     FileContext,
 )
+from src.core.file_intelligence.metadata import FileContextBuilder
+from src.core.file_intelligence.mime import DeterministicMime
 
 __all__ = [
     "ConfidenceLevel",
@@ -23,4 +25,6 @@ __all__ = [
     "OriginInfo",
     "ExtractedMetadata",
     "FileContext",
+    "FileContextBuilder",
+    "DeterministicMime",
 ]
