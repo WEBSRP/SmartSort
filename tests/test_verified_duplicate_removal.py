@@ -19,7 +19,11 @@ def copies(tmp_path,payload=b'identical'):
  src=tmp_path/'source';dst=tmp_path/'destination';src.write_bytes(payload);dst.write_bytes(payload);return src,dst
 
 
-@pytest.mark.parametrize('payload',[b'',b'identical',b'x'*(2*1024**2)])
+@pytest.mark.parametrize("payload", [
+    pytest.param(b"", id="empty"),
+    pytest.param(b"identical", id="small"),
+    pytest.param(b"x" * (2 * 1024**2), id="2-MiB"),
+])
 def test_only_source_is_removed_after_hash_match(tmp_path,payload):
  src,dst=copies(tmp_path,payload)
  removed,digest,error=FileUtils.remove_verified_duplicate(src,dst)

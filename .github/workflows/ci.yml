@@ -61,10 +61,10 @@ jobs:
 
           xvfb-run -a python -m pytest \
             -vv \
-            -s \
+            -o faulthandler_timeout=60 \
             --durations=20 \
             --durations-min=1 \
-            tests/ | tee pytest.log
+            tests/ 2>&1 | tee pytest.log
 
           echo ""
           echo "========== PYTEST FINISHED =========="
