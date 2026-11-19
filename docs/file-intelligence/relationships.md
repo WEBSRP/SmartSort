@@ -1,123 +1,138 @@
 # SmartSort File Intelligence Engine: Relationship Discovery & Clustering
 
-## 1. Overview & Objectives
+## Implementation status
 
-In real-world environments, files rarely exist in isolation. Course notes, project source code, presentations, and datasets arrive in related clusters:
+Phase 10 is implemented in `src/core/file_intelligence/relationships.py` and
+exported from the file-intelligence package. It consumes existing `FileContext`
+objects and returns deterministic `FileCluster` objects without opening files,
+accessing the network, importing Qt, or moving anything. Missing signals are
+computed from a copied context using Phase 09. Classifier, planner, organizer,
+and GUI integration remain later phases.
 
-- `Lecture_1_DBMS.pdf`, `Lecture_2_DBMS.pptx`, `Lecture_3_DBMS.zip`
-- `SmartSort_Report.docx`, `SmartSort_Presentation.pptx`, `smartsort_v1.0.tar.gz`
-- `scan_results_192.168.1.1.xml`, `nmap_report.txt`, `exploit_notes.md`
+## Similarity evidence
 
-The **Relationship & Clustering Engine** discovers these relationships deterministically without using an LLM. It clusters related files so they can be placed into cohesive, common directory hierarchies (e.g. `College/DBMS/Lectures/` or `Projects/SmartSort/`).
+`calculate_similarity(a, b)` returns `(score, shared_identity_tokens)` without
+mutating either input. The score is clamped to one:
 
----
-
-## 2. Deterministic Clustering Heuristics
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 1. SERIES & SEQUENTIAL PATTERN MATCHING                                     │
-│    - Detects numbered series: `Prefix_[0-9]+_Suffix`                        │
-│    - E.g. `Lecture_01_OS.pdf`, `Lecture_02_OS.pdf` $\rightarrow$ `OS_Lectures`      │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 2. TOKEN JACCARD & STEM SIMILARITY                                          │
-│    - Computes token overlap across normalized filename & title tokens       │
-│    - $J(A, B) = \frac{|Tokens(A) \cap Tokens(B)|}{|Tokens(A) \cup Tokens(B)|}$ │
-│    - Threshold: $J(A, B) \ge 0.60$ forms a strong cluster edge               │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 3. PROVENANCE & TEMPORAL CORRELATION                                        │
-│    - Files from identical origin domain downloaded within a 15-minute window │
-│    - E.g. 6 assignment files downloaded from Canvas in one browser session   │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 4. ARCHIVE CONTENT OVERLAP                                                  │
-│    - Matches standalone files against the internal TOC of sibling archives  │
-└─────────────────────────────────────────────────────────────────────────────┘
+```text
+0.65 × Jaccard(identity_a, identity_b)
++ 0.20 if validated nonempty origin hostnames match
++ 0.15 if positive finite creation timestamps differ by less than 900 seconds
++ 0.25 if compatible same-directory numbered series have different numbers
 ```
 
----
+Identity comes from canonical Phase 09 signals. Extension, directory, origin,
+camera and inherited cluster channels, zero-weight records, and generic role
+words such as `report`, `code` and `document` do not establish identity. Legacy
+unweighted token sets are supported. A recognized series removes only its own
+number token, preserving course identifiers such as `CS101`.
 
-## 3. Clustering Algorithm
+Series markers include lecture, assignment, exam, lab, part, volume, episode,
+and week. Topics must agree, or one topic may be missing when attaching sparse
+files. Number gaps are allowed. Unknown timestamps (including zero), invalid
+hostnames, and raw URL strings do not contribute evidence. Origin and time
+alone cannot reach the 0.60 edge threshold.
 
-The engine uses a deterministic **Connected-Components / Community Detection** algorithm on a similarity graph:
+An archive TOC match raises the score to at least 0.75. The engine compares a
+safe member-relative path, or a unique member basename for a same-directory
+sibling. Absolute, traversal, drive and control-containing TOC entries are
+ignored; duplicate basenames suppress the basename fallback. This is filename
+evidence, not proof that an external file was extracted from that archive.
+No archive payload is opened here.
 
-```python
-class RelationshipEngine:
-    def cluster_files(self, file_contexts: List[FileContext]) -> List[FileCluster]:
-        """Groups FileContexts into cohesive clusters based on multi-signal similarity."""
-        n = len(file_contexts)
-        adj_matrix = [[] for _ in range(n)]
+## Guarded connected components
 
-        # 1. Build Similarity Graph
-        for i in range(n):
-            for j in range(i + 1, n):
-                score, shared_tokens = self.calculate_similarity(file_contexts[i], file_contexts[j])
-                if score >= 0.60:
-                    adj_matrix[i].append((j, score, shared_tokens))
-                    adj_matrix[j].append((i, score, shared_tokens))
+Profiles are sorted by normalized logical path. Token and series postings
+identify candidate pairs; an exact score upper bound prunes broad-word near
+misses. Union-find retains a spanning forest of qualifying edges, then BFS
+extracts components with at least two members. Singletons remain unclustered.
+The engine stores only `n - 1` relationship witnesses per cluster rather than
+a dense graph.
 
-        # 2. Extract Connected Components
-        visited = set()
-        clusters = []
-        for i in range(n):
-            if i not in visited:
-                component = []
-                queue = [i]
-                visited.add(i)
-                while queue:
-                    curr = queue.pop(0)
-                    component.append(curr)
-                    for neighbor, _, _ in adj_matrix[curr]:
-                        if neighbor not in visited:
-                            visited.add(neighbor)
-                            queue.append(neighbor)
-                
-                if len(component) > 1:
-                    cluster = self._build_cluster(component, file_contexts, adj_matrix)
-                    clusters.append(cluster)
+Core files have a nonnumeric identity anchor beyond a generic series marker.
+Core components are built first. Weak files can form components using strict
+series or explicit archive evidence. A weak component attaches only when all
+qualifying core neighbors belong to one core component. Ambiguous weak files
+therefore cannot bridge different courses or projects. The guarded graph is
+intentionally more conservative than unrestricted connected components.
 
-        return clusters
+Connected components remain transitive: two endpoints may have no direct edge.
+This is not hierarchical clustering or a guarantee that every pair is similar.
+`calculate_similarity` reports pair evidence independently of batch ambiguity
+guards, so a qualifying pair can remain separate in an ambiguous batch.
 
-    def calculate_similarity(self, ctx_a: FileContext, ctx_b: FileContext) -> Tuple[float, Set[str]]:
-        """Calculates multi-dimensional similarity between two files."""
-        # 1. Token Similarity (Jaccard)
-        tokens_a = ctx_a.signals.tokens
-        tokens_b = ctx_b.signals.tokens
-        if not tokens_a or not tokens_b:
-            jaccard = 0.0
-            shared = set()
-        else:
-            shared = tokens_a.intersection(tokens_b)
-            jaccard = len(shared) / len(tokens_a.union(tokens_b))
+## Stable output and propagation
 
-        # 2. Origin Match Bonus
-        origin_bonus = 0.0
-        if ctx_a.origin.domain and ctx_a.origin.domain == ctx_b.origin.domain:
-            origin_bonus = 0.20
+Cluster IDs hash sorted normalized logical member paths; names use canonical
+keywords present in at least half the members (and at least two). Keywords are
+limited to 32 and names to 64 characters. Topic names precede series markers,
+for example `DBMS_Lectures`; a supported project prefix such as `SmartSort` is
+preserved. IDs are stable across input permutations and change with membership.
+They identify logical paths, not physical files or file contents.
 
-        # 3. Temporal Window Bonus (Downloaded within 15 mins)
-        time_bonus = 0.0
-        if abs(ctx_a.created_timestamp - ctx_b.created_timestamp) < 900:
-            time_bonus = 0.15
+`FileCluster.inferred_domain` aggregates local signal affinities, rolls up domain
+roots, and requires a 60% winning share. Phase 13 integration excludes typed
+directory, extension and inherited cluster channels from those votes, so the
+selected folder's generic name cannot contaminate cluster consensus. Legacy
+unweighted input behavior is unchanged. Otherwise it is `Others` with no inferred
+hierarchy. Cluster confidence is the mean score of the retained spanning
+witnesses. It is not a calibrated classification probability or an all-pairs
+cohesion measure.
 
-        total_score = min(1.0, jaccard * 0.65 + origin_bonus + time_bonus)
-        return total_score, shared
+Each member receives `cluster_id`, its own independent `related_file_paths`
+list, and the documented confidence contribution:
+
+```text
+boosted = baseline + 0.30 × (1 - baseline) × cluster_confidence
 ```
 
----
+Content-sparse members also receive missing shared keywords as `CLUSTER_CONTEXT`
+signals weighted by `0.30 × cluster_confidence`. Inherited signals never feed
+back into graph identity or local domain affinities. Per-file domain,
+subcategories, confidence enum, evidence list and destination are untouched;
+Phase 11 will consume these relationship hints during classification.
 
-## 4. Context Propagation & Confidence Boosting
+The serialized `relationship_base_confidence` and
+`relationship_confidence_boost` fields make repeated and JSON-reloaded runs
+idempotent. Re-clustering clears stale links, inherited signals and previous
+boosts for the supplied contexts. Independently added signal records survive
+cleanup. A changed external confidence score becomes a new baseline. Contexts
+outside the supplied batch are not updated. All profiles and graph outputs are
+validated before committing context mutations.
 
-When a file belongs to a strong cluster:
-1. **Context Inheritance**: If `Lecture_3.zip` has no internal text or metadata, but belongs to a cluster with `Lecture_1_DBMS.pdf` and `Lecture_2_DBMS.pptx`, it inherits the `DBMS` and `College` context.
-2. **Confidence Boosting**:
-   $$\text{Confidence}_{\text{boosted}} = \text{Confidence}_{\text{individual}} + 0.30 \times (1.0 - \text{Confidence}_{\text{individual}}) \times \text{ClusterConfidence}$$
-3. **Cluster Hierarchy Synthesis**: The common tokens across the cluster form the intermediate folder name (e.g. `College/DBMS/`).
+## Bounds and performance
+
+- At most 2,000 contexts, with distinct normalized logical paths of at most
+  4,096 characters; duplicate paths are rejected before mutation.
+- At most 256 canonical identity tokens per profile and 32,768 batch vocabulary
+  entries; input signal sets allow 2,080 tokens/records and 64 affinity keys.
+- At most 500 TOC entries of 1,024 characters are examined per profile.
+- Normalization cache is local to one batch and capped at 4,096 entries.
+  There is no persistent Phase 17 cache.
+
+Candidate comparisons have worst-case quadratic cost. Related-path output can
+also be quadratic for a large single cluster. Bounds limit work but do not
+provide a hard execution deadline.
+
+An isolated local benchmark on 2026-11-15 used precomputed signals and eleven
+runs per 500-file batch. Values are first run / median of ten subsequent runs /
+maximum subsequent run, in milliseconds:
+
+| Batch | First | Median | Maximum |
+| --- | ---: | ---: | ---: |
+| Numbered DBMS lectures | 19.677 | 21.542 | 22.872 |
+| Disjoint identities | 12.469 | 11.605 | 17.160 |
+| Shared-word near misses | 14.303 | 14.345 | 16.012 |
+
+These fixtures meet the roadmap's 25 ms target. This is not a universal latency
+guarantee; signal extraction, denser candidate graphs, larger batches and host
+load can increase runtime.
+
+## Verification
+
+`tests/test_file_intelligence/test_relationships.py` contains 66 cases covering
+exact scores, course/project examples, archive matches, sparse ambiguity,
+transitivity, exhaustive reference graphs, permutations, hash seeds, JSON
+round-trips, repeat-safe propagation, validation bounds and no-I/O/headless
+behavior. The full suite passed with 1,018 tests and one existing privileged-user
+permission skip. Source compilation and whitespace checks also pass.

@@ -41,11 +41,11 @@ bash packaging/debian/build_deb.sh
 
 The script:
 1. Reads the version from `src/version.py`
-2. Assembles the package tree under `packaging/debian/smartsort_<ver>_all/`
+2. Assembles the package tree under a private temporary directory
 3. Calls `dpkg-deb --build` to produce `build/deb/smartsort_<ver>_all.deb`
 4. Cleans up the temporary tree
 
-Output: `build/deb/smartsort_1.1.6_all.deb`
+Output: `build/deb/smartsort_1.2.12_all.deb`
 
 ---
 

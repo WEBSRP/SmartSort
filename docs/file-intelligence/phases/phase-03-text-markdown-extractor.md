@@ -63,6 +63,8 @@ class TextExtractor(BaseExtractor):
 
 ## Security Considerations
 - Bounded read: Read only first 64 KB using `f.read(65536)`. Never load entire multi-gigabyte log or CSV files into memory.
+- `max_bytes` accepts only non-negative integers (excluding booleans) or `None`.
+  Larger requests are capped at 64 KB; zero requests an empty sample.
 
 ## Performance Considerations
 - Sub-millisecond execution (< 0.5 ms per text file).
@@ -78,10 +80,10 @@ class TextExtractor(BaseExtractor):
   - Test UTF-8, Latin-1, and corrupted encoding handling.
 
 ## Acceptance Criteria
-- [ ] `BaseExtractor` and `ExtractorRegistry` implemented.
-- [ ] `TextExtractor` handles all 13 supported text extensions.
-- [ ] Memory strictly bounded on large files.
-- [ ] 100% test pass on `test_extractors_text.py`.
+- [x] `BaseExtractor` and `ExtractorRegistry` implemented.
+- [x] `TextExtractor` handles all 13 supported text extensions.
+- [x] Memory strictly bounded on large files.
+- [x] 100% test pass on `test_extractors_text.py`.
 
 ## Dependencies
 - Standard library (`re`, `io`, `typing`).
@@ -90,5 +92,34 @@ class TextExtractor(BaseExtractor):
 - Must NOT modify existing SmartSort rules or GUI.
 
 ## Completion Checklist
-- [ ] Base extractor and text extractor created.
-- [ ] Unit tests passing.
+- [x] Base extractor and text extractor created.
+- [x] Unit tests passing.
+
+## Implementation State — 2026-11-14
+
+Phase 03 implementation is complete in the local working tree. The extractor
+package exports `BaseExtractor`, `ExtractorRegistry`, and `TextExtractor`.
+Extraction returns title, headings, a 1,024-character preview, and up to 20
+keywords. Markdown titles prefer the first level-one heading, then the first
+non-empty line; titles are capped at 256 characters. Encoding uses UTF-8/BOM
+handling and Latin-1 fallback. Registry dispatch and extraction exceptions are
+returned as `FAILED` metadata rather than escaping the dispatcher.
+
+Validation on Python 3.13.5 with `QT_QPA_PLATFORM=offscreen`:
+
+- Phase 03: **101 passed**, no failures or skips.
+- Full suite: **429 passed, 1 skipped**, pytest return code **0**.
+- Before these changes: **414 passed, 1 skipped**.
+- `compileall` succeeded for `src/` and `main.py`, with bytecode redirected to
+  a temporary directory.
+- The full-suite runner captured `pytest.main()`'s return value and exited with
+  that value directly, avoiding the existing Qt fixture's exit-zero backstop.
+
+Scope notes:
+
+- `TIMEOUT_SECONDS` remains an advisory API budget. Hard execution deadlines
+  for the overall analysis pipeline are not enforced by this synchronous text
+  extractor; no background workers or timers are introduced here.
+- Existing Phase 02 metadata/xattr changes remain in the working tree.
+- Phase 04 (PDF extraction) is the next implementation phase. No later phase
+  has been implemented as part of this work.

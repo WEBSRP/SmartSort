@@ -19,6 +19,8 @@ The Organization Planner translates abstract classification results into concret
 
 ## Files To Modify
 - `src/core/file_intelligence/__init__.py`: Export `OrganizationPlanner`.
+- `src/core/file_intelligence/context.py`: Implement and export the previously
+  documented `OrganizationProposal`, including JSON serialization helpers.
 
 ## Existing Components To Reuse
 - `src/rules/manager.py` (`RuleManager`) & `src/rules/engine.py` (`RuleEngine`): For user custom rule evaluation.
@@ -48,20 +50,27 @@ class OrganizationPlanner:
 - **User Rule Evaluation First**:
   - Calls `rule_engine.evaluate_file(context.path, context.size_bytes)`.
   - If a rule matches, returns `OrganizationProposal` with `is_rule_override=True`, `confidence_score=1.0`.
+  - Preserves existing full-target semantics for templates containing
+    `{filename}`; otherwise appends the context filename to the expanded folder.
 - **Intelligence Hierarchy Generation**:
   - Builds path segments: `[context.classification_domain] + context.subcategories`.
   - Resolves target: `os.path.abspath(os.path.join(root_dir, *segments, context.filename))`.
 - **Boundary Containment Check**:
-  - `os.path.commonpath([root_abs, target_abs]) == root_abs`. Raises `ValueError` on path traversal violation.
+  - Canonicalizes root/target through symlinks before checking
+    `os.path.commonpath([root_real, target_real]) == root_real`.
+    Raises `ValueError` on path traversal violation or resolution failure.
 
 ## Error Handling
 - Rejects relative escapes (`../`) and illegal characters (`\0`).
 
 ## Security Considerations
-- Guarantees target files never escape the configured root directory or destination base.
+- Checks destination containment in the selected root against the current
+  filesystem. Execution must revalidate paths; a proposal is not a race-free
+  authorization to write after later filesystem changes.
 
 ## Performance Considerations
-- Planning execution in < 0.05 ms per proposal.
+- Target: planning execution in < 0.05 ms per proposal. Local warm medians meet
+  this on the measured fixtures; cold calls and maxima exceed it (see below).
 
 ## CI / Headless Requirements
 - Zero Qt imports. 100% headless test execution.
@@ -74,9 +83,9 @@ class OrganizationPlanner:
   - Test low-confidence fallback to `Others/`.
 
 ## Acceptance Criteria
-- [ ] `OrganizationPlanner` generates verified `OrganizationProposal` objects.
-- [ ] User custom rules take strict precedence when matched.
-- [ ] 100% test pass on `test_planner.py`.
+- [x] `OrganizationPlanner` generates verified `OrganizationProposal` objects.
+- [x] User custom rules take strict precedence when matched.
+- [x] 100% test pass on `test_planner.py`.
 
 ## Dependencies
 - Standard library `os`, `pathlib`, `typing`.
@@ -85,5 +94,62 @@ class OrganizationPlanner:
 - Must NOT modify existing safe transfer or move execution code.
 
 ## Completion Checklist
-- [ ] `planner.py` implemented.
-- [ ] Unit tests passing.
+- [x] `planner.py` implemented.
+- [x] Unit tests passing.
+
+## Implementation State — 2026-11-17
+
+Functional implementation is complete in the local working tree. Added/exported
+`OrganizationPlanner` and `OrganizationProposal`. No dependencies, organizer,
+GUI, configuration or transfer execution behavior changed. The existing rule
+engine is reused, refreshed from the supplied manager on every plan, with size
+conditions using context metadata rather than reading the source file.
+
+Rules win over classification, including unknown classification. Directory
+templates append the filename; full-file `{filename}` templates do not duplicate
+it. Absolute rule targets are accepted only inside the canonical root. An invalid
+winning rule raises rather than falling back. Rule labels are display metadata;
+proposal hierarchy segments describe actual canonical directories.
+
+Without a rule, classified domain/subcategory segments form the hierarchy.
+Scores below 0.35 or UNKNOWN/NOT_AVAILABLE levels route to `Others`. Invalid
+high-confidence domains/components are rejected. The planner does not invent
+missing course/project names or perform extension-based classification again.
+Only `context.proposed_destination` changes, after successful proposal creation.
+
+Safety checks reject traversal, control characters, ambiguous separators,
+unsafe filename components, oversized paths/hierarchies, escaping/dangling
+symlinks, symlink loops, inaccessible paths, non-directory ancestors and special
+targets. Internal aliases resolving inside the selected canonical root are
+allowed. Missing directories are not created; existing regular targets are not
+overwritten or renamed. Rules, relative working directory and filesystem state
+are inputs to determinism. Containment checks do not eliminate races between
+planning and execution, or replace collision/no-op handling and safe transfers.
+
+Validation:
+
+- Baseline: **1,091 passed, 1 skipped**, exit code 0.
+- Added **95 planner test cases**, covering real rule-manager conditions,
+  priority/updates/expansion, intelligent and fallback hierarchies, traversal,
+  symlink and file-type checks, Unicode/byte limits, invalid inputs, atomic context
+  updates, JSON/list independence, classifier interoperability and headless import.
+- Final full suite: **1,186 passed, 1 skipped** in 19.32 s, genuine pytest exit
+  code **0** preserved before the existing Qt teardown's forced exit-zero hook.
+- Source compilation and `git diff --check` pass. Test state/bytecode use `/tmp`.
+
+Isolated local measurements (501 runs per case; first call, then median and
+maximum of 500 subsequent calls, in milliseconds):
+
+| Fixture | First | Warm median | Warm maximum |
+| --- | ---: | ---: | ---: |
+| Intelligence; missing destination directories | 0.1491 | 0.0487 | 0.1202 |
+| Intelligence; existing destination directories | 0.0737 | 0.0482 | 0.1769 |
+| One custom rule | 0.0792 | 0.0496 | 0.2193 |
+
+Warm medians meet the 0.05 ms target on these fixtures; first calls and maxima
+do not. These observations are not a universal deadline. Longer paths, slower
+filesystems and more/expensive existing rules increase runtime. This phase adds
+no rule-regex timeout or persistent cache.
+
+See [organization-planner.md](../organization-planner.md) for exact contracts.
+Next: **Phase 13 — Directory Organizer Integration & Batch Profiling**.

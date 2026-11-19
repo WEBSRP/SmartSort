@@ -1,14 +1,20 @@
 # SmartSort File Intelligence Engine: Origin & Provenance Detection
 
+
+Phase 17 adds private XDG SQLite caching of successful extraction and corroborated
+origins, with identity and provenance invalidation. See the
+[cache implementation notes](phases/phase-17-caching-performance.md) for API,
+privacy, retention and performance limits.
+
 ## 1. Overview & Objectives
 
-Origin detection resolves where a file came from using **only local machine evidence**. Knowing that a file originated from `canvas.university.edu` or `github.com` provides unambiguous evidence for categorization (e.g. `College` vs `Projects`), even when the filename is cryptic (e.g. `download_392.zip`).
+Origin detection resolves where a file came from using **only local machine evidence**. A corroborated origin such as `canvas.university.edu` or `github.com` provides useful context for later categorization even when the filename is cryptic. Metadata matching is evidence, not cryptographic proof of a download's identity.
 
 The origin detector operates under strict constraints:
 1. **100% Offline**: No network requests, DNS lookups, or HTTP queries.
-2. **Read-Only / Lock-Safe**: Accesses browser databases using immutable read-only flags or in-memory shadow copies to ensure active browser sessions are never locked or corrupted.
+2. **Read-Only / Lock-Safe**: SQLite queries private, bounded main/WAL snapshots, never live browser paths. Original histories are read only as regular files and receive no application writes.
 3. **No Speculation**: If no local trace exists, origin is explicitly marked as `Confidence.UNKNOWN`.
-4. **Privacy-Preserving**: Only top-level domains and clean site names are exposed in classification justifications. Sensitive URL query parameters (tokens, auth tickets, session IDs) are stripped immediately.
+4. **Privacy-Preserving**: Returned URLs are validated HTTP(S) URLs with credentials, queries, fragments, and matrix/session parameters removed. Hostnames and friendly site names are resolved locally. Generic evidence descriptions contain no raw SQL diagnostics or source paths.
 
 ---
 
@@ -62,6 +68,15 @@ The origin detector operates under strict constraints:
   ORDER BY start_time DESC LIMIT 1;
   ```
 
+The Phase 08 implementation first queries exact paths, then an escaped filename
+fallback if no exact rows exist. It also reads `downloads_url_chains`, preferring
+the last valid redirect URL over tab/referrer URLs. Chromium timestamps are
+microseconds since 1601 (legacy Unix-second schemas are also supported). Known
+incomplete states and contradictory size/time metadata are rejected. Default
+and `Profile *` directories are discovered for Chrome, Chromium, Brave, and Edge
+under `XDG_CONFIG_HOME`; browser locations are bounded rather than searched
+across the filesystem.
+
 ### 3.2 Firefox Discovery
 - **Database Paths**:
   - `~/.mozilla/firefox/*.default*/places.sqlite`
@@ -74,11 +89,44 @@ The origin detector operates under strict constraints:
   ORDER BY a.dateAdded DESC LIMIT 1;
   ```
 
+Current Firefox inspection selects destination-file annotations by attribute
+name and joins them to `moz_places` source URLs. `downloads/metaData` supplies
+state, file size, and millisecond end time; annotation `dateAdded` uses Unix
+microseconds. Reduced schemas without full metadata receive less corroboration.
+Standard, Snap, and Flatpak Firefox roots and declared `profiles.ini` profiles
+are supported. The SQL examples above describe the evidence; actual queries
+use bound exact-path parameters, escaped LIKE patterns, and bounded fields/rows.
+
 ### 3.3 Concurrency & Lock Safety
-Opening an active SQLite database locked by a running browser can result in `sqlite3.OperationalError: database is locked`. The Origin Detector guarantees safety by:
-1. Connecting with immutable read-only URI: `sqlite3.connect('file:' + db_path + '?mode=ro&immutable=1', uri=True)`.
-2. Setting busy timeout: `pragma busy_timeout = 1000`.
-3. If database is exclusively locked, creating a temporary shadow copy in `/tmp` using atomic file descriptors.
+The detector creates private temporary copies before making a SQLite connection.
+It copies main/WAL data with before/after identity, size, mtime, and ctime checks,
+allowing one retry if the source changes. Rollback journals are conservatively
+skipped. Snapshot directories are 0700 and files 0600; all are removed before
+the call returns.
+
+Stable copies without WAL use `mode=ro&immutable=1`. Copies with a non-empty WAL
+use `mode=ro` so committed WAL-only records remain visible. SQLite's immutable
+flag is not used on an actively changing original: it disables locking and
+change detection and can produce incorrect results if that assumption is false.
+See [SQLite URI semantics](https://www.sqlite.org/uri.html).
+
+Limits per detection: 64 MiB copied in total (including retries/WAL), 32
+profiles, 64 matching rows per history, and a two-second cooperative deadline.
+SQLite uses query-only/trusted-schema settings, bounded selected fields, and a
+progress callback. Snapshot checks are best effort, not an atomic filesystem
+snapshot or a coordinated SQLite backup; hot or oversized histories can yield
+unknown. Real-history latency can exceed the small-fixture 5 ms target.
+
+### 3.4 Corroboration and Confidence
+
+- Valid xattrs take precedence and return `CONFIRMED`.
+- Exact browser path + matching size + timestamp within 24 hours returns
+  `CONFIRMED`; supported weaker exact-path matches return `PROBABLE`.
+- Filename fallback requires both size equality and matching time, and returns
+  `PROBABLE`. Default file timestamps use mtime/ctime; callers may supply an
+  explicit Unix-second `file_timestamp`.
+- Known contradictions, failed downloads, too many matching records, and
+  equally strong conflicting URLs near the best timestamp return unknown.
 
 ---
 
@@ -90,7 +138,7 @@ To maintain user privacy and generate clean classification signals, URLs are san
    `https://canvas.stanford.edu/courses/102/files/302?download_frd=1&token=xyz`
    $\rightarrow$ Clean Origin: `https://canvas.stanford.edu/courses/102/files/302`
    $\rightarrow$ Domain: `canvas.stanford.edu`
-   $\rightarrow$ Site Name: `canvas`
+   $\rightarrow$ Site Name: `lms`
 
 2. **CDN & Hostname Resolution**:
    Reuses and expands the existing `_CDN_TO_SITE` dictionary from `filename_cleanup.py`:
@@ -105,4 +153,9 @@ To maintain user privacy and generate clean classification signals, URLs are san
 ## 5. Privacy & User Control
 
 - **Configuration Toggle**: `enable_origin_detection: bool` in `config.json` (defaults to `true`). When set to `false`, zero browser databases or xattrs are scanned.
-- **Local Isolation**: Extracted URLs and domains are stored strictly in-memory during execution and included in the local `SmartSort_Arrangement.md` index. No data is sent off-device.
+- **Local Isolation**: Returned evidence remains in memory. Temporary history copies contain private browser data, have restricted permissions, and are deleted before return. No data is sent off-device or included in backend exception logs.
+- **Current Phase Boundary**: The toggle governs `OriginDetector`; existing standalone xattr helpers share URL sanitization. Live organizer/GUI/report integration is deferred to its designated phases. Embedded-document URL inference and sibling inheritance in the overview are also deferred.
+- **Sanitization Limits**: URLs over 4,096 characters and unsupported schemes are rejected. Known credential/query/fragment/session carriers are removed; opaque identifiers in retained URL paths cannot be generically identified as secrets. Unknown hostnames remain intact instead of guessing public suffixes.
+
+For completion status, tests, timing observations, and remaining boundaries, see
+[Phase 08](phases/phase-08-origin-detection.md).

@@ -2,6 +2,10 @@ import os
 import threading
 import time
 import logging
+from pathlib import Path
+import stat
+from src.utils.output_tracker import is_recent_output
+from src.utils.folder_guard import protected_folder_for
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -25,10 +29,21 @@ def _get_file_identity(file_path):
         return None
 
 
+def _get_file_version(file_path):
+    """Distinguish changed contents and rapid inode reuse without hashing."""
+    try:
+        info = os.stat(file_path)
+        return (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        return None
+
+
 class DownloadHandler(FileSystemEventHandler):
-    def __init__(self, organizer, on_new_file_callback):
+    def __init__(self, organizer, on_new_file_callback, *, watch_path=None, recursive=False):
         self.organizer = organizer
         self.on_new_file_callback = on_new_file_callback
+        self.watch_path = os.path.realpath(watch_path) if watch_path else None
+        self.recursive = recursive
         # Added .tmp, .opdownload for Chromium-based browsers
         self.ignored_extensions = [".crdownload", ".part", ".tmp", ".opdownload"]
         # path -> (timestamp, inode, device)
@@ -36,21 +51,53 @@ class DownloadHandler(FileSystemEventHandler):
         # file appearing at the same path after a MOVE is not mistakenly
         # considered already processed.
         self.processed_files = {}
+        self._processed_versions = {}
         # (path, inode, device) tuples currently being stability-checked
         self.pending_files = {}  # path -> (inode, device)
         self.lock = threading.Lock()
 
     def on_created(self, event):
-        if not event.is_directory:
+        if event.is_directory:
+            self._handle_directory(event.src_path)
+        else:
             self._handle_event(event.src_path)
 
     def on_moved(self, event):
-        if not event.is_directory:
+        if event.is_directory:
+            self._handle_directory(event.dest_path)
+        else:
             self._handle_event(event.dest_path)
             
     def on_modified(self, event):
         if not event.is_directory:
             self._handle_event(event.src_path)
+
+    def _ignored_path(self, path):
+        absolute = os.path.abspath(path)
+        if self.watch_path:
+            try:
+                if os.path.commonpath([self.watch_path, absolute]) != self.watch_path:
+                    return True
+                parts = Path(os.path.relpath(absolute, self.watch_path)).parts
+            except ValueError:
+                return True
+            if any(part.startswith('.') or os.path.splitext(part)[1].lower() in self.ignored_extensions for part in parts):
+                return True
+            if protected_folder_for(absolute, self.watch_path):
+                return True
+            # Reject symlinked ancestors as well as direct symlink files.
+            if os.path.realpath(absolute) != absolute:
+                return True
+        return (os.path.islink(absolute) or os.path.basename(absolute) == 'SmartSort_Arrangement.md'
+                or is_recent_output(absolute))
+
+    def _handle_directory(self, path):
+        if not self.recursive or self._ignored_path(path):
+            return
+        for directory, names, files in os.walk(path, followlinks=False):
+            names[:] = [name for name in names if not self._ignored_path(os.path.join(directory, name))]
+            for name in files:
+                self._handle_event(os.path.join(directory, name))
 
     def _cleanup_expired(self):
         """Prune files processed more than 300 seconds (5 minutes) ago."""
@@ -60,10 +107,18 @@ class DownloadHandler(FileSystemEventHandler):
                     if now - timestamp > expiry_limit]
         for path in expired:
             self.processed_files.pop(path, None)
+            self._processed_versions.pop(path, None)
 
     def _handle_event(self, file_path):
         # 1. Ignore if file doesn't exist (e.g. deleted or moved by us)
         if not os.path.exists(file_path):
+            return
+        if self._ignored_path(file_path):
+            return
+        try:
+            if not stat.S_ISREG(os.lstat(file_path).st_mode):
+                return
+        except OSError:
             return
 
         # 2. Ignore temporary download files
@@ -74,7 +129,8 @@ class DownloadHandler(FileSystemEventHandler):
 
         # 3. Get the physical file identity (inode + device)
         identity = _get_file_identity(file_path)
-        if identity is None:
+        version = _get_file_version(file_path)
+        if identity is None or version is None:
             return
 
         # 4. Prevent duplicate processing of the same *physical* file
@@ -85,12 +141,14 @@ class DownloadHandler(FileSystemEventHandler):
             prev = self.processed_files.get(file_path)
             if prev is not None:
                 _, prev_ino, prev_dev = prev
-                if (prev_ino, prev_dev) == identity:
-                    # Same physical file at same path – duplicate watchdog event
+                if ((prev_ino, prev_dev) == identity and
+                        self._processed_versions.get(file_path, version) == version):
+                    # Same physical file and version: duplicate watchdog event.
                     return
-                # Different inode at same path – this is a new file (path reused
-                # after a MOVE).  Remove stale entry and process the new file.
+                # Changed contents or a replacement at the same path. Linux
+                # can reuse an inode immediately; inode/device alone is insufficient.
                 del self.processed_files[file_path]
+                self._processed_versions.pop(file_path, None)
 
             # Check pending_files: same path AND same inode/device → already stabilizing
             pending_identity = self.pending_files.get(file_path)
@@ -106,7 +164,7 @@ class DownloadHandler(FileSystemEventHandler):
         try:
             # Wait for file to be stable
             stable = False
-            last_size = -1
+            last_version = None
             stable_count = 0
             
             # Check up to 10 seconds for stability
@@ -115,20 +173,19 @@ class DownloadHandler(FileSystemEventHandler):
                     self.organizer.logger.debug(f"Stale event skipped. File no longer exists: {file_path}")
                     return
                     
-                try:
-                    current_size = os.path.getsize(file_path)
-                except OSError:
-                    self.organizer.logger.debug(f"Stale event skipped. Could not get size for: {file_path}")
+                current_version = _get_file_version(file_path)
+                if current_version is None:
+                    self.organizer.logger.debug(f"Stale event skipped. Could not stat: {file_path}")
                     return
                     
-                if current_size == last_size:
+                if current_version == last_version:
                     stable_count += 1
                     if stable_count >= 2: # 1 second stable
                         stable = True
                         break
                 else:
                     stable_count = 0
-                    last_size = current_size
+                    last_version = current_version
                     
                 time.sleep(0.5)
                 
@@ -143,35 +200,42 @@ class DownloadHandler(FileSystemEventHandler):
 
             # Verify the file identity hasn't changed during stabilization
             current_identity = _get_file_identity(file_path)
-            if current_identity is None:
+            if current_identity is None or current_identity != original_identity or self._ignored_path(file_path):
                 self.organizer.logger.debug(f"Stale event skipped. Cannot stat file: {file_path}")
                 return
 
             with self.lock:
                 self.processed_files[file_path] = (time.time(), current_identity[0], current_identity[1])
+                self._processed_versions[file_path] = current_version
                 
             # Notify the application/GUI about the new file
             self.on_new_file_callback(file_path)
         finally:
             with self.lock:
-                self.pending_files.pop(file_path, None)
+                if self.pending_files.get(file_path) == original_identity:
+                    self.pending_files.pop(file_path, None)
 
     def mark_as_unprocessed(self, file_path):
         """Allow re-processing if needed (e.g. on error)"""
         with self.lock:
             self.processed_files.pop(file_path, None)
+            self._processed_versions.pop(file_path, None)
 
 
 class FileMonitor:
     def __init__(self, watch_path, organizer, on_new_file_callback):
-        self.watch_path = watch_path
+        self.watch_path = os.path.realpath(os.path.expanduser(watch_path))
         self.organizer = organizer
         self.on_new_file_callback = on_new_file_callback
         self.observer = Observer()
-        self.event_handler = DownloadHandler(self.organizer, self.on_new_file_callback)
+        config = getattr(organizer, 'config', None)
+        self.recursive = bool(config and config.get('sorting_mode', 'rules_first') == 'intelligence'
+                              and config.get('downloads_recursive', True))
+        self.event_handler = DownloadHandler(self.organizer, self.on_new_file_callback,
+                                            watch_path=self.watch_path, recursive=self.recursive)
 
     def start(self):
-        self.observer.schedule(self.event_handler, self.watch_path, recursive=False)
+        self.observer.schedule(self.event_handler, self.watch_path, recursive=self.recursive)
         self.observer.start()
 
     def stop(self):

@@ -32,3 +32,8 @@ class RuleEngine:
         expanded = expanded.replace("{extension}", ext)
         expanded = expanded.replace("{filename}", filename)
         return expanded
+
+
+def rules_for_mode(rules, mode):
+    """Only explicitly marked manual rules override Content intelligence."""
+    return [rule for rule in rules if mode != "intelligence" or getattr(rule, "apply_in_intelligence", False)]

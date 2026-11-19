@@ -337,8 +337,9 @@ def test_actual_content_duplicate_returns_duplicate(temp_dir):
     result, info = organizer.process_file(str(src))
 
     assert result == "DUPLICATE"
-    # Source must NOT be deleted for duplicates
-    assert src.exists()
+    # The verified source copy is removed; the existing destination remains.
+    assert not src.exists()
+    assert existing.read_text() == "identical content"
 
 
 # ===================================================================

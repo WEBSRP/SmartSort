@@ -252,6 +252,25 @@ _CATEGORY_HINTS: dict[str, str] = {
 }
 
 
+_CODE_FOLDERS = {
+    **dict.fromkeys((".py", ".pyw"), "Python"),
+    **dict.fromkeys((".sh", ".bash", ".zsh", ".fish"), "Shell"),
+    **dict.fromkeys((".js", ".mjs", ".cjs", ".jsx"), "JavaScript"),
+    **dict.fromkeys((".ts", ".tsx"), "TypeScript"),
+    **dict.fromkeys((".c", ".h"), "C"),
+    **dict.fromkeys((".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"), "C++"),
+    ".java": "Java", ".go": "Go", ".rs": "Rust", ".cs": "CSharp",
+    ".rb": "Ruby", ".php": "PHP", ".swift": "Swift", ".kt": "Kotlin",
+    ".kts": "Kotlin", ".scala": "Scala", ".sql": "SQL", ".r": "R",
+    ".ps1": "PowerShell", ".bat": "Batch", ".cmd": "Batch",
+    ".lua": "Lua", ".pl": "Perl", ".dart": "Dart",
+    ".html": "HTML", ".htm": "HTML", ".css": "CSS", ".scss": "CSS",
+}
+_LANGUAGE_FOLDERS = {name.casefold(): name for name in _CODE_FOLDERS.values()}
+_LANGUAGE_FOLDERS.update({"c#": "CSharp", "bash": "Shell", "zsh": "Shell", "fish": "Shell"})
+_CATEGORY_HINTS.update({extension: "Code" for extension in _CODE_FOLDERS})
+
+
 class DeterministicMime:
     """Deterministic MIME type resolution via extension mapping and magic bytes.
 
@@ -316,3 +335,39 @@ class DeterministicMime:
         """
         ext_lower = extension.lower()
         return _CATEGORY_HINTS.get(ext_lower, "Others")
+
+    @staticmethod
+    def get_sorting_fallback(extension: str, mime_type: str = "") -> str:
+        """Useful file-type destinations when semantic evidence is insufficient.
+
+        Keep classifier hints separate: a known format is useful for routing,
+        but is not proof of the document's subject or purpose.
+        """
+        extension = extension.lower()
+        if extension in {".deb", ".rpm", ".appimage", ".apk", ".xapk", ".exe", ".msi", ".dmg", ".pkg"}:
+            return "Applications"
+        known_mime = _EXTENSION_MIME_MAP.get(extension, mime_type)
+        if known_mime.startswith("video/"):
+            return "Videos"
+        if known_mime.startswith("audio/"):
+            return "Audio"
+        category = DeterministicMime.get_category_hint(extension)
+        if category == "Others" and known_mime.startswith("image/"):
+            return "Images"
+        return category
+
+    @staticmethod
+    def get_code_folder(extension, code_language=None):
+        """Use a fixed language vocabulary, never an arbitrary metadata path."""
+        if isinstance(code_language, str):
+            language = _LANGUAGE_FOLDERS.get(code_language.strip().casefold())
+            if language:
+                return language
+        return _CODE_FOLDERS.get(extension.lower())
+
+    @staticmethod
+    def get_sorting_parts(extension, mime_type="", code_language=None):
+        language = DeterministicMime.get_code_folder(extension, code_language)
+        if language:
+            return ("Code", language)
+        return (DeterministicMime.get_sorting_fallback(extension, mime_type),)

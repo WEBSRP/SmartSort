@@ -391,7 +391,7 @@ def test_collision_skip_policy(tmp_path):
     assert any(r.status == OperationStatus.SKIPPED for r in result.records)
 
 
-def test_duplicate_identical_content_preserves_both_files(tmp_path):
+def test_duplicate_identical_content_removes_source_copy(tmp_path):
     dest_dir = tmp_path / "Documents" / "PDF"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_file = dest_dir / "test.pdf"
@@ -403,8 +403,8 @@ def test_duplicate_identical_content_preserves_both_files(tmp_path):
     organizer = create_organizer(tmp_path)
     result = organize_dir(organizer, tmp_path, generate_report=False)
 
-    # CRITICAL: Both files must be preserved
-    assert src_file.exists()
+    # Remove only the verified matching source copy.
+    assert not src_file.exists()
     assert dest_file.exists()
     assert dest_file.read_bytes() == b"identical content"
     # Status must be DUPLICATE, NOT VERIFIED_AND_MOVED
@@ -616,3 +616,257 @@ def test_end_to_end_acceptance_scenario(tmp_path):
     assert "d.pptx" in updated_report
     assert "file:///" in updated_report
 
+
+
+# Phase 16: execution audit metadata and offline arrangement index.
+@pytest.mark.parametrize('outcome', ['moved', 'collision', 'duplicate', 'skipped', 'missing', 'copy_error', 'mkdir_error', 'delete_error'])
+def test_execution_preserves_reviewed_audit_metadata(tmp_path, monkeypatch, outcome):
+    organizer = create_organizer(tmp_path, {'conflict_resolution': 'skip' if outcome == 'skipped' else 'rename'})
+    source = tmp_path / 'lecture.pdf'
+    source.write_bytes(b'lecture')
+    target = tmp_path / 'College' / 'DBMS' / 'lecture.pdf'
+    item = OrganizePlanItem(str(source), str(target), 'College/DBMS', 'Intelligence',
+                           'REVIEW', ['Title: DBMS'], .72, 'course-1', 'DBMS Course')
+    plan = OrganizePlan([item], str(tmp_path), 1, {'College/DBMS': 1}, 1, ['Partial metadata'])
+    if outcome in {'collision', 'duplicate', 'skipped'}:
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'lecture' if outcome == 'duplicate' else b'other')
+    if outcome == 'missing':
+        source.unlink()
+    def fail(*args, **kwargs):
+        raise OSError('injected failure')
+    if outcome == 'copy_error':
+        monkeypatch.setattr(shutil, 'copy2', fail)
+    if outcome == 'mkdir_error':
+        monkeypatch.setattr(os, 'makedirs', fail)
+    if outcome == 'delete_error':
+        monkeypatch.setattr(os, 'remove', fail)
+    result = organizer.execute(plan, progress_callback=lambda *args: item.evidence.append('late mutation'))
+    record, = result.records
+    expected = {'moved': OperationStatus.VERIFIED_AND_MOVED, 'collision': OperationStatus.COLLISION_RESOLVED,
+                'duplicate': OperationStatus.DUPLICATE, 'skipped': OperationStatus.SKIPPED}
+    assert record.status == expected.get(outcome, OperationStatus.FAILED)
+    assert (record.confidence, record.confidence_score, record.cluster_id, record.cluster_name) == ('REVIEW', .72, 'course-1', 'DBMS Course')
+    assert record.evidence == ['Title: DBMS']
+    assert result.warnings == ['Partial metadata']
+    record.evidence.append('record only')
+    assert 'record only' not in item.evidence
+    if outcome == 'collision':
+        assert record.target != str(target)
+
+
+def audit_record(tmp_path, name='lecture.pdf', **kwargs):
+    values = dict(source=str(tmp_path / name), target=str(tmp_path / 'College' / 'DBMS' / 'Lectures' / name),
+                  category='College', rule_name='Intelligence', status=OperationStatus.VERIFIED_AND_MOVED,
+                  size=2048, hash='a' * 64, confidence='CONFIRMED', confidence_score=.92,
+                  evidence=['Document Title: Normalization', 'Origin Domain: canvas.example.edu'],
+                  cluster_name='DBMS Course', cluster_id='course-1')
+    values.update(kwargs)
+    return FileOperationRecord(**values)
+
+
+def test_enhanced_report_hierarchy_clusters_and_audit(tmp_path):
+    organizer = create_organizer(tmp_path)
+    records = [audit_record(tmp_path), audit_record(tmp_path, 'lecture2.pdf', status=OperationStatus.COLLISION_RESOLVED)]
+    result = OrganizeResult(records, success_count=1, collision_count=1, cancelled=True, warnings=['One file unavailable'])
+    report = Path(organizer.generate_report(str(tmp_path), result)).read_text()
+    assert '## College/DBMS/Lectures' in report
+    assert 'CONFIRMED (92%)' in report
+    assert '**Evidence:**' in report and 'Document Title: Normalization' in report
+    assert 'Origin Domain: canvas' in report
+    assert '## Clusters' in report and 'DBMS Course (2 files)' in report
+    assert '(#file-1)' in report and '<a id="file-1"></a>' in report
+    assert '**Cluster ID:** ` course-1 `' in report
+    assert '**Rule:** Intelligence' in report
+    assert 'a' * 64 in report and '2.00 KB' in report
+    assert '**Cancelled:** Yes' in report and 'One file unavailable' in report
+    assert report.count('### lecture') == 2
+    assert 'http://' not in report and 'https://' not in report
+
+
+@pytest.mark.parametrize('status', list(OperationStatus))
+def test_report_all_statuses_and_action_semantics(tmp_path, status):
+    record = audit_record(tmp_path, status=status, error='failure reason' if status == OperationStatus.FAILED else '')
+    report = Path(create_organizer(tmp_path).generate_report(str(tmp_path), OrganizeResult([record]))).read_text()
+    assert status.value in report
+    assert record.source in report and record.target in report
+    assert 'CONFIRMED (92%)' in report
+    assert 'file:///' in report
+    if status in {OperationStatus.FAILED, OperationStatus.SKIPPED}:
+        assert 'Intended Destination' in report and '[Open Source]' in report
+        assert '[Open File]' not in report
+    elif status == OperationStatus.DUPLICATE:
+        assert '[Open Existing Destination]' in report
+    else:
+        assert '**Final Location:**' in report and '[Open File]' in report
+
+
+def test_report_legacy_records_and_empty_result(tmp_path):
+    organizer = create_organizer(tmp_path)
+    record = FileOperationRecord(str(tmp_path / 'a'), str(tmp_path / 'Dest' / 'a'), 'Legacy', 'Rule', OperationStatus.SKIPPED)
+    assert record.evidence == [] and record.confidence_score is None
+    report_path = Path(organizer.generate_report(str(tmp_path), OrganizeResult([record])))
+    report = report_path.read_text()
+    assert '` CONFIRMED `' in report and 'No evidence recorded.' in report
+    assert '## Clusters' not in report
+    organizer.generate_report(str(tmp_path), OrganizeResult([]))
+    assert '**Total Files Processed:** 0' in report_path.read_text()
+    assert 'Legacy' not in report_path.read_text()
+
+
+def test_report_escapes_untrusted_markdown_and_links(tmp_path):
+    name = 'Résumé [x](y) #%.pdf'
+    record = audit_record(tmp_path, name, evidence=['![remote](https://bad.example/x)\n# forged', '<script>alert(1)</script>', '`code`'],
+                          cluster_name='<img src="https://bad.example">', category='A[B]')
+    report = Path(create_organizer(tmp_path).generate_report(str(tmp_path), OrganizeResult([record]))).read_text()
+    assert '![remote]' not in report and '\n# forged' not in report
+    assert '<script>' not in report
+    assert '` <img src="https://bad.example"> `' in report
+    assert '&lt;script&gt;' in report
+    assert '\\[x\\]\\(y\\)' in report
+    assert f'[Open File](<{Path(record.target).as_uri()}>)' in report
+    assert '%C3%A9' in report and '%23%25.pdf' in report
+
+
+def test_report_distinguishes_same_named_clusters(tmp_path):
+    records = [audit_record(tmp_path), audit_record(tmp_path, 'two.pdf', cluster_id='course-2')]
+    report = Path(create_organizer(tmp_path).generate_report(str(tmp_path), OrganizeResult(records))).read_text()
+    assert report.count('### DBMS Course (1 files)') == 2
+    assert 'course-1' in report and 'course-2' in report
+
+
+@pytest.mark.parametrize('failure_point', ['fsync', 'replace'])
+def test_atomic_report_failure_preserves_previous_and_cleans_temp(tmp_path, monkeypatch, failure_point):
+    organizer = create_organizer(tmp_path)
+    report_path = tmp_path / 'SmartSort_Arrangement.md'
+    report_path.write_text('previous complete report')
+    def fail(*args):
+        raise OSError('disk error')
+    monkeypatch.setattr(os, failure_point, fail)
+    with pytest.raises(OSError, match='disk error'):
+        organizer.generate_report(str(tmp_path), OrganizeResult([audit_record(tmp_path)]))
+    assert report_path.read_text() == 'previous complete report'
+    assert not list(tmp_path.glob('.SmartSort_Arrangement.*.tmp'))
+
+
+def test_atomic_report_temp_is_sibling_and_legacy_symlink_is_ignored(tmp_path, monkeypatch):
+    organizer = create_organizer(tmp_path)
+    victim = tmp_path / 'unrelated.txt'
+    victim.write_text('keep me')
+    (tmp_path / 'SmartSort_Arrangement.md.tmp').symlink_to(victim)
+    original_replace = os.replace
+    seen = []
+    def replace(source, destination):
+        assert Path(source).parent == tmp_path
+        assert os.stat(source).st_dev == os.stat(tmp_path).st_dev
+        assert '**Total Files Processed:** 1' in Path(source).read_text()
+        seen.append(source)
+        original_replace(source, destination)
+    monkeypatch.setattr(os, 'replace', replace)
+    organizer.generate_report(str(tmp_path), OrganizeResult([audit_record(tmp_path)]))
+    assert len(seen) == 1 and not Path(seen[0]).exists()
+    assert victim.read_text() == 'keep me'
+    assert organizer.scan(str(tmp_path)) == [str(victim)]
+
+
+@pytest.mark.parametrize('score', [None, float('nan'), float('inf'), -1, 1.5])
+def test_report_unknown_or_invalid_score_not_fabricated(tmp_path, score):
+    record = audit_record(tmp_path, confidence_score=score)
+    report = Path(create_organizer(tmp_path).generate_report(str(tmp_path), OrganizeResult([record]))).read_text()
+    assert '` CONFIRMED `' in report and 'nan%' not in report
+
+
+def test_report_code_spans_cannot_inject_markdown(tmp_path):
+    record = audit_record(tmp_path, '` ![x](https:evil) `.pdf', cluster_id='` <b>injected</b> `')
+    report = Path(create_organizer(tmp_path).generate_report(str(tmp_path), OrganizeResult([record]))).read_text()
+    assert '`` ' + record.source + ' ``' in report
+    assert '`` ` <b>injected</b> ` ``' in report
+
+
+def test_cancelled_execution_records_only_processed_files(tmp_path):
+    organizer = create_organizer(tmp_path)
+    sources = [tmp_path / 'one.pdf', tmp_path / 'two.pdf']
+    for source in sources:
+        source.write_text('test')
+    items = [OrganizePlanItem(str(source), str(tmp_path / 'Dest' / source.name), 'Dest', 'Rule', evidence=['Reviewed']) for source in sources]
+    calls = iter([False, True])
+    result = organizer.execute(OrganizePlan(items, str(tmp_path), 2, {'Dest': 2}), cancel_check=lambda: next(calls))
+    assert result.cancelled and len(result.records) == 1
+    assert result.records[0].evidence == ['Reviewed']
+    assert sources[1].exists()
+
+
+def test_atomic_report_partial_write_failure_keeps_previous(tmp_path, monkeypatch):
+    organizer = create_organizer(tmp_path)
+    report = tmp_path / 'SmartSort_Arrangement.md'
+    report.write_text('previous')
+    original_fdopen = os.fdopen
+    class BrokenWriter:
+        def __init__(self, *args, **kwargs):
+            self.handle = original_fdopen(*args, **kwargs)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.handle.close()
+        def write(self, content):
+            self.handle.write(content[:20])
+            raise OSError('partial write')
+    monkeypatch.setattr(os, 'fdopen', BrokenWriter)
+    with pytest.raises(OSError, match='partial write'):
+        organizer.generate_report(str(tmp_path), OrganizeResult([audit_record(tmp_path)]))
+    assert report.read_text() == 'previous'
+    assert not list(tmp_path.glob('.SmartSort_Arrangement.*.tmp'))
+
+
+@pytest.mark.parametrize("policy", ["rename", "overwrite"])
+def test_reverse_nested_moves_and_duplicate_sources(tmp_path, policy):
+    organizer = create_organizer(tmp_path, {"conflict_resolution": policy})
+    target = tmp_path / "sorted/sample.pdf"
+    target.parent.mkdir()
+    target.write_bytes(b"original")
+    sources = []
+    for directory, content in [("one", b"original"), ("two", b"second"), ("three", b"third")]:
+        source = tmp_path / directory / target.name
+        source.parent.mkdir()
+        source.write_bytes(content)
+        sources.append(source)
+    items = [OrganizePlanItem(str(src), str(target), "Docs", "Test") for src in sources]
+    result = organizer.execute(OrganizePlan(items, str(tmp_path), 3, {}), capture_undo=True)
+    assert result.error_count == 0 and result.duplicate_count == 1
+    assert all(not src.exists() for src in sources)
+    result.undo.complete()
+    assert result.undo.reverse() == (3, [])
+    assert [src.read_bytes() for src in sources] == [b"original", b"second", b"third"]
+    assert list(target.parent.iterdir()) == [target]
+    assert target.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("conflict", ["occupied", "modified", "replaced", "protected", "symlink"])
+def test_reverse_preserves_later_changes(tmp_path, conflict):
+    organizer = create_organizer(tmp_path)
+    src = tmp_path / "incoming/file.txt"
+    dst = tmp_path / "sorted/file.txt"
+    src.parent.mkdir()
+    src.write_bytes(b"before")
+    plan = OrganizePlan([OrganizePlanItem(str(src), str(dst), "Docs", "Test")], str(tmp_path), 1, {})
+    result = organizer.execute(plan, capture_undo=True)
+    if conflict == "occupied":
+        src.write_bytes(b"new source")
+    elif conflict == "modified":
+        dst.write_bytes(b"edited")
+    elif conflict == "replaced":
+        dst.rename(dst.with_suffix(".old"))
+        dst.write_bytes(b"before")
+    elif conflict == "protected":
+        (src.parent / ".smartsort-ignore").touch()
+    else:
+        src.parent.rename(tmp_path / "another")
+        src.parent.symlink_to(tmp_path / "another")
+    result.undo.complete()
+    restored, errors = result.undo.reverse()
+    assert restored == 0 and len(errors) == 1
+    assert dst.read_bytes() == (b"edited" if conflict == "modified" else b"before")
+    if conflict == "occupied":
+        assert src.read_bytes() == b"new source"
+    else:
+        assert not src.exists()

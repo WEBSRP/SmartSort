@@ -1,8 +1,10 @@
 Package: smartsort
-Version: 1.1.6
+Version: 1.2.12
 Architecture: all
 Maintainer: Soumya Ranjan Parida <contact@smartsort-org.com>
-Depends: python3, python3-pyqt6, python3-watchdog, python3-notify2, libglib2.0-0, gir1.2-notify-0.7
-Description: Intelligent Download Organizer for Linux
- SmartSort is an offline Linux file automation and organization platform built in Python and PyQt6.
+Depends: python3, python3-pyqt6, python3-watchdog, python3-notify2, python3-pypdf, python3-pil, python3-mutagen, libglib2.0-0, gir1.2-notify-0.7
+Suggests: python3-docx, python3-openpyxl
+Description: Intelligent Download Organizer and File Intelligence Platform for Linux
+ SmartSort is an offline Linux file automation, organization, and intelligence platform built in Python and PyQt6.
  It monitors your Downloads folder in real-time and automatically sorts incoming files into category directories using a dynamic, priority-sorted rule engine.
+ It profiles document content and local provenance, explains classifications, and safely organizes related files into hierarchical directories.

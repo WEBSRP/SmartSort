@@ -1,5 +1,8 @@
 # Phase 20: Headless CI Validation & Release Certification
 
+**Status — 2026-11-18:** Local validation and audit report complete. Unconditional
+production-release certification remains pending hosted CI and documented targets.
+
 ## Objective
 Execute the full continuous integration validation pipeline under headless conditions, verify zero CI hang regressions across repeated test runs, compile the Debian release package, and create the final certification report.
 
@@ -54,10 +57,10 @@ SmartSort mandates an absolute guarantee against headless CI hangs and test flak
 - All test files under `tests/` and `tests/test_file_intelligence/`.
 
 ## Acceptance Criteria
-- [ ] 3 consecutive full-suite test runs pass 100% with exit code 0.
-- [ ] Zero thread leaks or unmanaged timers detected.
-- [ ] Debian package compiles cleanly.
-- [ ] Final certification report `reports/file_intelligence_implementation.md` generated.
+- [x] Three consecutive local full-suite runs pass with exit code 0 and no expected failures (one existing skip).
+- [x] No outstanding Python workers, tracked Qt workers/timers or child processes detected in final local inventories.
+- [x] Debian package compiles cleanly and passes content/system-Python smoke checks.
+- [x] Final report `reports/file_intelligence_implementation.md` generated with explicit certification limits.
 
 ## Dependencies
 - `pytest`, `dpkg-dev`, standard library.
@@ -66,6 +69,22 @@ SmartSort mandates an absolute guarantee against headless CI hangs and test flak
 - Must NOT alter production logic.
 
 ## Completion Checklist
-- [ ] CI pipeline validated.
-- [ ] Release audit report written.
+- [x] Local workflow-style/Xvfb and offscreen validation completed; exact hosted Ubuntu/Python 3.12 validation remains pending.
+- [x] Release audit report written.
 - [ ] System certified for production release.
+
+
+## Validation result
+
+See [the final report](../../../reports/file_intelligence_implementation.md).
+Dedicated intelligence: **1,242 passed, 1 skipped**. Each of three full runs:
+**1,447 passed, 1 skipped**, actual exit code **0**, no forced exit, no expected
+failures. The earlier fixture's unconditional exit-zero backstop was removed and
+two subprocess canaries now test failure/success propagation. This is a justified
+test-infrastructure repair; production source hashes are unchanged.
+
+The workflow-style run required approval to start Xvfb outside the sandbox because
+local display sockets were blocked there. Final runs returned naturally with no
+observed outstanding Python threads, tracked running QThreads/active QTimers or
+child processes. Final full-suite times of roughly 25–30 seconds miss the phase's
+1.5-second target. Exact hosted CI and public release sign-off are not claimed.

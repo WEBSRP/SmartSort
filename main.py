@@ -133,59 +133,78 @@ def ensure_user_icons_installed(logger=None):
         if logger:
             logger.error(f"Failed to install user icon theme: {e}")
 
-def main():
+def configure_application_icon(app):
     from pathlib import Path
-    import time
-    
+    from PyQt6.QtGui import QIcon
+    from src.utils.paths import AppPaths
+    icon_dir = str(AppPaths.resource_dir() / "icons")
+    current_paths = QIcon.themeSearchPaths()
+    if icon_dir not in current_paths:
+        QIcon.setThemeSearchPaths(current_paths + [icon_dir])
+    icon = QIcon.fromTheme("smartsort")
+    if icon.isNull():
+        icon = QIcon(str(Path(icon_dir) / "logo.png"))
+    app.setWindowIcon(icon)
+
+
+def main():
     parser = argparse.ArgumentParser(description="SmartSort File Organizer")
     parser.add_argument("--service", action="store_true", help="Run in service mode (minimized/background)")
     parser.add_argument("--daemon", action="store_true", help="Run in background daemon mode (no GUI)")
     args = parser.parse_args()
-
     if args.daemon:
         run_daemon()
-        return
+        return 0
 
     from PyQt6.QtWidgets import QApplication
-    from src.gui.main_window import SmartSortGUI
-    from src.utils.config import ConfigManager
-    from src.utils.logger import SmartSortLogger
-
-    logger = SmartSortLogger()
-    ensure_user_icons_installed(logger)
+    from src.gui.single_instance import SingleInstanceGuard, InstanceGuardError
 
     app = QApplication(sys.argv)
-    
-    # Set up theme search paths and set application-wide branded icon
-    from PyQt6.QtGui import QIcon
-    if isinstance(QApplication, type) and hasattr(QApplication, "instance"):
-        inst = QApplication.instance()
-        if inst is not None and not hasattr(inst, "mock_calls"):
-            from src.utils.paths import AppPaths
-            icon_dir = str(AppPaths.resource_dir() / "icons")
-            current_paths = QIcon.themeSearchPaths()
-            if icon_dir not in current_paths:
-                QIcon.setThemeSearchPaths(current_paths + [icon_dir])
-            
-            logo_icon = QIcon.fromTheme("smartsort")
-            if not logo_icon.isNull():
-                app.setWindowIcon(logo_icon)
-            else:
-                icon_path = Path(icon_dir) / "logo.png"
-                if icon_path.exists():
-                    app.setWindowIcon(QIcon(str(icon_path)))
-        
-    window = SmartSortGUI()
-    
-    config = ConfigManager()
-    
-    if (args.service or config.get("start_minimized")) and getattr(window, "tray_available", False):
-        # Run directly in tray (don't show the dashboard window)
-        pass
-    else:
-        window.show()
-        
-    sys.exit(app.exec())
+    app.setApplicationName("SmartSort")
+    app.setOrganizationName("SmartSort")
+    app.setDesktopFileName("smartsort")
+    guard = None
+    splash = None
+    try:
+        guard = SingleInstanceGuard()
+        if not guard.acquire_or_notify(activate=not args.service):
+            return 0
+        app.aboutToQuit.connect(guard.close)
+
+        from src.utils.config import ConfigManager
+        config = ConfigManager()
+        background = args.service or config.get("start_minimized", False)
+        if not background:
+            from src.gui.startup import StartupSplash
+            splash = StartupSplash(theme=config.get("theme", "system"))
+            splash.show()
+            app.processEvents()
+
+        # Paint the small first frame before icon setup or expensive UI imports.
+        from src.utils.logger import SmartSortLogger
+        logger = SmartSortLogger()
+        ensure_user_icons_installed(logger)
+        configure_application_icon(app)
+        from src.gui.main_window import SmartSortGUI
+        from src.gui.startup import activate_dashboard
+        window = SmartSortGUI(config=config)
+        window._instance_guard = guard
+        guard.set_activation_handler(lambda: activate_dashboard(window))
+        if not (background and getattr(window, "tray_available", False)):
+            window.show()
+        if splash is not None:
+            splash.finish(window)
+        app.processEvents()
+        return app.exec()
+    except InstanceGuardError as error:
+        print(f"SmartSort could not claim or contact its running instance: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if splash is not None:
+            splash.close()
+        if guard is not None:
+            guard.close()
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

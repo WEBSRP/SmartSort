@@ -12,8 +12,13 @@ import json
 
 import pytest
 
-from src.core.file_intelligence.context import FileContext, ExtractedMetadata
-from src.core.file_intelligence.metadata import FileContextBuilder
+from src.core.file_intelligence.context import (
+    ConfidenceLevel,
+    FileContext,
+    ExtractedMetadata,
+    OriginSource,
+)
+from src.core.file_intelligence.metadata import FileContextBuilder, FileMetadataExtractor
 from src.core.file_intelligence.mime import DeterministicMime
 
 
@@ -274,6 +279,22 @@ class TestFileContextBuilderBasic:
         assert ctx.metadata.extraction_status == "SUCCESS"
         assert ctx.metadata.error_message == ""
 
+    def test_origin_populated_from_xattr(self, tmp_path, monkeypatch):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            if attr == b"user.xdg.origin.url":
+                return b"https://downloads.example/report.pdf?token=secret"
+            raise OSError("No data available")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        ctx = FileContextBuilder.build_initial_context(fpath)
+
+        assert ctx.origin.url == "https://downloads.example/report.pdf"
+        assert ctx.origin.source is OriginSource.EXTENDED_ATTRIBUTE
+        assert ctx.origin.confidence is ConfidenceLevel.CONFIRMED
+
 
 class TestFileContextBuilderHashing:
     """Tests for optional SHA-256 hashing."""
@@ -300,6 +321,112 @@ class TestFileContextBuilderHashing:
         ctx2 = FileContextBuilder.build_initial_context(fpath, compute_hash=True)
 
         assert ctx1.sha256_hash == ctx2.sha256_hash
+
+
+class TestFileMetadataExtractorXattrs:
+    """Extended attribute extraction tests."""
+
+    def test_read_xattr_returns_decoded_value(self, tmp_path, monkeypatch):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            assert path == fpath
+            assert attr == b"user.xdg.origin.url"
+            return b"https://example.com/files/report.pdf"
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        value = FileMetadataExtractor.read_xattr(fpath, "user.xdg.origin.url")
+
+        assert value == "https://example.com/files/report.pdf"
+
+    def test_read_xattr_missing_returns_none(self, tmp_path, monkeypatch):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            raise OSError("No data available")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        assert FileMetadataExtractor.read_xattr(fpath, "user.xdg.origin.url") is None
+
+    def test_read_extended_attributes_collects_available_values(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            if attr == b"user.xdg.origin.url":
+                return b"https://example.com/downloads/report.pdf"
+            raise OSError("No data available")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        attributes = FileMetadataExtractor.read_extended_attributes(fpath)
+
+        assert attributes == {
+            "user.xdg.origin.url": "https://example.com/downloads/report.pdf",
+        }
+
+    def test_extract_origin_from_xattrs_strips_query_and_fragment(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            if attr == b"user.xdg.origin.url":
+                return b"https://example.com/file.pdf?token=secret#section"
+            raise OSError("No data available")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        origin = FileMetadataExtractor.extract_origin_from_xattrs(fpath)
+
+        assert origin.url == "https://example.com/file.pdf"
+        assert origin.source is OriginSource.EXTENDED_ATTRIBUTE
+        assert origin.confidence is ConfidenceLevel.CONFIRMED
+        assert "user.xdg.origin.url" in origin.evidence_detail
+
+    def test_extract_origin_from_xattrs_uses_referrer_fallback(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            if attr == b"user.xdg.referrer.url":
+                return b"https://referrer.example/path?auth=secret"
+            raise OSError("No data available")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        origin = FileMetadataExtractor.extract_origin_from_xattrs(fpath)
+
+        assert origin.url == "https://referrer.example/path"
+        assert origin.source is OriginSource.EXTENDED_ATTRIBUTE
+
+    def test_extract_origin_from_xattrs_unavailable_is_unknown(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fpath = _write_file(tmp_path / "download.pdf")
+
+        def mock_getxattr(path, attr):
+            raise AttributeError("xattrs unavailable")
+
+        monkeypatch.setattr(os, "getxattr", mock_getxattr)
+
+        origin = FileMetadataExtractor.extract_origin_from_xattrs(fpath)
+
+        assert origin.url == ""
+        assert origin.source is OriginSource.UNKNOWN
+        assert origin.confidence is ConfidenceLevel.UNKNOWN
 
 
 class TestFileContextBuilderFilenameEdgeCases:
@@ -520,6 +647,7 @@ class TestModuleIsolation:
         """Phase 2 classes exported from __init__."""
         import src.core.file_intelligence as fi
         assert hasattr(fi, "FileContextBuilder")
+        assert hasattr(fi, "FileMetadataExtractor")
         assert hasattr(fi, "DeterministicMime")
 
     def test_phase1_exports_preserved(self):

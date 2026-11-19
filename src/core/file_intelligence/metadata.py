@@ -8,11 +8,73 @@ a SHA-256 hash. Pure Python with zero Qt or network dependencies.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
-from src.core.file_intelligence.context import ExtractedMetadata, FileContext
+from src.core.file_intelligence.context import (
+    ExtractedMetadata,
+    FileContext,
+    OriginInfo,
+)
 from src.core.file_intelligence.mime import DeterministicMime
 from src.utils.file_utils import FileUtils
+
+
+class FileMetadataExtractor:
+    """Pure filesystem metadata helpers used during initial context building."""
+
+    ORIGIN_XATTRS = (
+        "user.xdg.origin.url",
+        "user.xdg.referrer.url",
+    )
+
+    @staticmethod
+    def read_xattr(file_path: str, attr_name: str) -> Optional[str]:
+        """Read a UTF-8 extended attribute, returning ``None`` if unavailable."""
+        try:
+            raw_value = os.getxattr(file_path, attr_name.encode("utf-8"))
+        except (AttributeError, OSError, ValueError):
+            return None
+
+        try:
+            value = raw_value.decode("utf-8", errors="ignore").strip()
+        except (AttributeError, UnicodeDecodeError):
+            return None
+
+        return value or None
+
+    @classmethod
+    def read_extended_attributes(
+        cls,
+        file_path: str,
+        attr_names: Optional[Iterable[str]] = None,
+    ) -> Dict[str, str]:
+        """Read selected extended attributes without raising on unsupported filesystems."""
+        names = attr_names if attr_names is not None else cls.ORIGIN_XATTRS
+        attributes: Dict[str, str] = {}
+        for attr_name in names:
+            value = cls.read_xattr(file_path, attr_name)
+            if value:
+                attributes[attr_name] = value
+        return attributes
+
+    @classmethod
+    def extract_origin_from_xattrs(cls, file_path: str) -> OriginInfo:
+        """Populate minimal origin evidence from local xattrs only."""
+        attributes = cls.read_extended_attributes(file_path)
+        from src.core.file_intelligence.origin import origin_from_url
+        for attr_name in cls.ORIGIN_XATTRS:
+            url = attributes.get(attr_name)
+            if url:
+                origin = origin_from_url(url, detail=f"Read {attr_name} extended attribute")
+                if origin.url:
+                    return origin
+        return OriginInfo()
+
+    @staticmethod
+    def _strip_url_query_and_fragment(url: str) -> str:
+        """Remove query strings and fragments before storing URL evidence."""
+        from src.core.file_intelligence.origin import origin_from_url
+        return origin_from_url(url).url
 
 
 class FileContextBuilder:
@@ -28,6 +90,8 @@ class FileContextBuilder:
     def build_initial_context(
         file_path: str,
         compute_hash: bool = False,
+        *,
+        read_origin_xattrs: bool = True,
     ) -> FileContext:
         """Create a ``FileContext`` populated with filesystem metadata.
 
@@ -38,6 +102,9 @@ class FileContextBuilder:
         compute_hash:
             If ``True``, compute and store the SHA-256 hash. Deferred by
             default for performance.
+        read_origin_xattrs:
+            Keep the legacy xattr-only origin probe by default. Batch pipelines
+            can disable it when delegating provenance to a configured detector.
 
         Returns
         -------
@@ -104,6 +171,7 @@ class FileContextBuilder:
             extractor_name="filesystem",
             extraction_status="SUCCESS",
         )
+        origin = FileMetadataExtractor.extract_origin_from_xattrs(canonical) if read_origin_xattrs else OriginInfo()
 
         return FileContext(
             path=canonical,
@@ -118,4 +186,5 @@ class FileContextBuilder:
             device=stat_result.st_dev,
             sha256_hash=sha256,
             metadata=meta,
+            origin=origin,
         )

@@ -4,15 +4,21 @@ import os
 import re
 import uuid
 import threading
+import time
+import copy
+import json
+import math
+from types import SimpleNamespace
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
                              QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                              QTextEdit, QTableWidget, QTableWidgetItem, 
                              QFileDialog, QSpinBox, QCheckBox, QMessageBox,
                              QFormLayout, QGroupBox, QLineEdit, QComboBox, 
                              QDialog, QDialogButtonBox, QSystemTrayIcon, QMenu, QFrame,
-                             QProgressBar)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject, QEvent
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
+                             QProgressBar, QScrollArea, QButtonGroup, QPlainTextEdit,
+                             QAbstractItemView, QHeaderView)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject, QEvent, QTimer
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFontDatabase
 from datetime import datetime
 
 from src.utils.config import ConfigManager
@@ -25,21 +31,57 @@ from src.core.directory_organizer import (
     DirectoryPreviewSummary, OperationStatus
 )
 
+class SortingTestSignals(QObject):
+    finished = pyqtSignal(object)
+    error = pyqtSignal(object)
+
+
+class SortingTestWorker(QRunnable):
+    def __init__(self, request_id, key, settings, rules, file_path):
+        super().__init__()
+        self.request_id, self.key = request_id, key
+        self.settings, self.rules = copy.deepcopy(settings), copy.deepcopy(rules)
+        self.file_path = file_path
+        self.signals = SortingTestSignals()
+
+    def run(self):
+        from src.core.sorting_tester import preview_sorting
+        try:
+            result = preview_sorting(self.settings, self.rules, file_path=self.file_path)
+            self.signals.finished.emit((self.request_id, self.key, result))
+        except Exception as error:
+            self.signals.error.emit((self.request_id, self.key, str(error)))
+
+
 class DirectoryOrganizerSignals(QObject):
     progress = pyqtSignal(int, int, str)       # (processed, total, current_file)
     preview_ready = pyqtSignal(object)         # (DirectoryPreviewSummary)
     finished = pyqtSignal(object, str)         # (OrganizeResult, report_path)
+    reversed = pyqtSignal(int, object)
     error = pyqtSignal(str)                    # (error_message)
 
 class DirectoryOrganizerWorker(QRunnable):
     def __init__(self, organizer: DirectoryOrganizer, root_dir: str, mode: str = "organize",
-                 recursive: bool = False, generate_report: bool = True):
+                 recursive: bool = False, generate_report: bool = True, plan=None, review_key=None,
+                 execution_options=None):
         super().__init__()
         self.organizer = organizer
+        if mode == "preview":
+            # Bind queued previews to the selected mode and rules at creation.
+            selected_mode = organizer.config.get("sorting_mode", "rules_first")
+            original_config = organizer.config
+            self.organizer = copy.copy(organizer)
+            self.organizer.config = SimpleNamespace(get=lambda key, default=None:
+                selected_mode if key == "sorting_mode" else original_config.get(key, default))
+            self.organizer.rule_manager = SimpleNamespace(rules=copy.deepcopy(organizer.rule_manager.rules))
         self.root_dir = root_dir
         self.mode = mode
         self.recursive = recursive
         self.generate_report = generate_report
+        self.review_plan = copy.deepcopy(plan)
+        self.undo = None
+        self.review_key = review_key
+        self.execution_options = dict(execution_options) if execution_options else None
         self.signals = DirectoryOrganizerSignals()
         self.cancel_event = threading.Event()
 
@@ -48,16 +90,31 @@ class DirectoryOrganizerWorker(QRunnable):
 
     def run(self):
         try:
-            if self.mode == "preview":
-                summary = self.organizer.preview(self.root_dir, recursive=self.recursive)
-                self.signals.preview_ready.emit(summary)
-            elif self.mode == "organize":
+            if self.mode == "reverse":
+                self.signals.reversed.emit(*self.undo.reverse())
+            elif self.mode == "preview":
+                if self.cancel_event.is_set():
+                    self.signals.finished.emit(OrganizeResult(records=[], cancelled=True), "")
+                    return
                 files = self.organizer.scan(self.root_dir, recursive=self.recursive)
+                plan = self.organizer.plan(self.root_dir, files)
+                self.review_plan = copy.deepcopy(plan)
+                summary = DirectoryPreviewSummary(plan.total_files, dict(plan.category_counts),
+                    copy.deepcopy(plan.items), plan.cluster_count, list(plan.warnings))
+                if self.cancel_event.is_set():
+                    self.signals.finished.emit(OrganizeResult(records=[], cancelled=True), "")
+                else:
+                    self.signals.preview_ready.emit(summary)
+            elif self.mode == "organize":
                 if self.cancel_event.is_set():
                     res = OrganizeResult(records=[], cancelled=True)
                     self.signals.finished.emit(res, "")
                     return
-                plan = self.organizer.plan(self.root_dir, files)
+                plan = self.review_plan
+                if plan is None:
+                    # Legacy direct-worker callers retain scan/plan behavior.
+                    files = self.organizer.scan(self.root_dir, recursive=self.recursive)
+                    plan = self.organizer.plan(self.root_dir, files)
                 if self.cancel_event.is_set():
                     res = OrganizeResult(records=[], cancelled=True)
                     self.signals.finished.emit(res, "")
@@ -69,12 +126,24 @@ class DirectoryOrganizerWorker(QRunnable):
                 def cancel_check():
                     return self.cancel_event.is_set()
 
-                result = self.organizer.execute(plan, progress_callback=progress_cb,
-                                                cancel_check=cancel_check)
+                executor = self.organizer
+                if self.execution_options is not None:
+                    executor = copy.copy(self.organizer)
+                    original_config = self.organizer.config
+                    options = self.execution_options
+                    executor.config = SimpleNamespace(get=lambda key, default=None:
+                        options[key] if key in options else original_config.get(key, default))
+                result = executor.execute(plan, progress_callback=progress_cb,
+                                                cancel_check=cancel_check, capture_undo=True)
                 report_path = ""
                 if self.generate_report and (result.success_count > 0 or result.collision_count > 0
                                              or result.duplicate_count > 0 or result.error_count > 0):
-                    report_path = self.organizer.generate_report(self.root_dir, result)
+                    try:
+                        report_path = self.organizer.generate_report(self.root_dir, result)
+                    except OSError as error:
+                        result.warnings.append(f"Could not write arrangement report: {error}")
+                if result.undo:
+                    result.undo.complete()
                 self.signals.finished.emit(result, report_path)
         except Exception as e:
             self.signals.error.emit(str(e))
@@ -82,6 +151,109 @@ class DirectoryOrganizerWorker(QRunnable):
 class WorkerSignals(QObject):
     finished = pyqtSignal(str, str, str) # file_path, result, info
     error = pyqtSignal(str, str) # file_path, error_msg
+
+
+_REVIEW_CONTROLS = {i: f"\\x{i:02x}" for i in (*range(32), 127)}
+
+
+def review_text(value):
+    """Keep Unicode literal while preventing controls from forging review rows."""
+    return str(value).translate(_REVIEW_CONTROLS)
+
+
+def confidence_tag(item):
+    level = getattr(item, "confidence", "UNKNOWN")
+    if level not in ("CONFIRMED", "PROBABLE", "UNCERTAIN", "UNKNOWN", "NOT_AVAILABLE"):
+        level = "UNKNOWN"
+    score = getattr(item, "confidence_score", None)
+    if (isinstance(score, bool) or not isinstance(score, (int, float)) or
+            not math.isfinite(score) or not 0 <= score <= 1):
+        return f"[{level}]"
+    return f"[{level} ({score:.0%})]"
+
+
+def format_directory_review(summary, root_dir):
+    root_prefix = os.path.join(os.path.abspath(root_dir), "")
+    lines = ["=== DRY-RUN PREVIEW SUMMARY ===", f"Planned moves: {summary.total_files}",
+             f"Clusters discovered: {summary.cluster_count}"]
+    if not summary.items:
+        lines.append("  No moves proposed; sources may already be organized or excluded.")
+    if summary.warnings:
+        lines.extend(["", f"Planning warnings ({len(summary.warnings)}):"])
+        lines.extend(f"  • {review_text(warning)}" for warning in summary.warnings)
+    lines.extend(["", "Planned Moves:"])
+    for index, item in enumerate(summary.items, 1):
+        try:
+            destination = (item.target_path[len(root_prefix):] if item.target_path.startswith(root_prefix)
+                           else os.path.relpath(item.target_path, root_dir))
+        except ValueError:
+            destination = item.target_path
+        lines.append(f"  {index}. {review_text(os.path.basename(item.source_path))} -> {review_text(destination)} {confidence_tag(item)}")
+        if item.cluster_name:
+            lines.append(f"    Cluster: {review_text(item.cluster_name)}")
+        if item.evidence:
+            lines.extend(f"    Evidence: {review_text(reason)}" for reason in item.evidence[:8])
+            if len(item.evidence) > 8:
+                lines.append(f"    {len(item.evidence) - 8} further reasons — use Inspect evidence for the full list.")
+        else:
+            lines.append("    Evidence: No detailed evidence available.")
+    lines.extend(["", "Category Breakdown:"])
+    lines.extend(f"  • {review_text(cat)}: {count} file(s)" for cat, count in sorted(summary.category_counts.items()))
+    lines.extend(["", "Confidence is a classification estimate, not a correctness probability.",
+                  "Configured rules take priority; a confirmed rule match confirms that policy."])
+    return "\n".join(lines)
+
+
+class EvidenceDialog(QDialog):
+    def __init__(self, item, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("File evidence")
+        self.resize(720, 480)
+        layout = QVBoxLayout(self)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.details.setStyleSheet("font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+        lines = [review_text(os.path.basename(item.source_path)), confidence_tag(item),
+                 f"Source: {review_text(item.source_path)}", f"Destination: {review_text(item.target_path)}",
+                 f"Rule: {review_text(item.rule_name)}", f"Cluster: {review_text(item.cluster_name) or 'None'}",
+                 "", "Classification estimate; not a probability of correctness.", "", "Evidence:"]
+        lines.extend(f"• {review_text(reason)}" for reason in item.evidence)
+        if not item.evidence:
+            lines.append("No detailed evidence available.")
+        self.details.setPlainText("\n".join(lines))
+        layout.addWidget(self.details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class ServiceStatusSignals(QObject):
+    ready = pyqtSignal(str, bool)
+
+
+class ServiceStatusWorker(QRunnable):
+    """Keep potentially slow systemctl calls out of the GUI event loop."""
+
+    def __init__(self, query):
+        super().__init__()
+        self.query = query
+        self.signals = ServiceStatusSignals()
+
+    def run(self):
+        status, enabled = "Unavailable", False
+        try:
+            status = self.query()
+            if status in ("Running", "Stopped", "Disabled"):
+                import subprocess
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-enabled", "smartsort.service"],
+                    capture_output=True, text=True, check=False, timeout=2.0)
+                enabled = result.stdout.strip() == "enabled"
+        except Exception:
+            enabled = status == "Stopped"
+        self.signals.ready.emit(status, enabled)
+
 
 class FileWorker(QRunnable):
     def __init__(self, organizer, file_path, user_approved=False):
@@ -143,10 +315,11 @@ class MonitorThread(QThread):
         return self.monitor.event_handler
 
 class SmartSortGUI(QMainWindow):
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
         self.setWindowTitle("SmartSort - File Organizer")
-        self.resize(800, 600)
+        self.resize(1100, 780)
+        self.setMinimumSize(860, 620)
         
         # Set Window Icon using absolute path resolution based on project root
         from PyQt6.QtGui import QIcon
@@ -167,15 +340,23 @@ class SmartSortGUI(QMainWindow):
                 self.setWindowIcon(QIcon(str(icon_path)))
         
         # Initialize Core
-        self.config = ConfigManager()
+        self.config = config if config is not None else ConfigManager()
         self.logger = SmartSortLogger()
         self.organizer = FileOrganizer(self.config, self.logger)
         self.dir_organizer = DirectoryOrganizer(self.config, self.logger)
         self.active_dir_worker = None
+        self._reviewed_plan = None
+        self._review_key = None
+        self._review_items = []
+        self._sorting_mode_labels = []
+        self._executing_review = None
         self.last_report_path = ""
         from src.utils.autostart import AutostartManager
         self.autostart_manager = AutostartManager(self.logger)
         self.threadpool = QThreadPool()
+        self._service_status = "Checking…"
+        self._service_enabled = False
+        self._service_worker = None
         
         self.stats = {"processed": 0, "duplicates": 0, "errors": 0}
         self.really_exit = False
@@ -188,7 +369,9 @@ class SmartSortGUI(QMainWindow):
         self.tray_available = False
         try:
             self.setup_system_tray()
-            self.tray_available = True
+            self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+            if not self.tray_available:
+                self.tray_icon.hide()
         except Exception as e:
             self.logger.warning(f"System tray initialization failed: {e}")
             
@@ -196,12 +379,14 @@ class SmartSortGUI(QMainWindow):
         
         from PyQt6.QtCore import QTimer
         self.status_timer = QTimer(self)
-        self.status_timer.timeout.connect(self.update_dashboard_stats)
+        self.status_timer.timeout.connect(self.refresh_dashboard)
+        self.update_dashboard_stats()
         if "PYTEST_CURRENT_TEST" not in os.environ:
             self.status_timer.start(3000)
+            self.refresh_dashboard()
         
         if "PYTEST_CURRENT_TEST" not in os.environ:
-            self.start_monitor()
+            QTimer.singleShot(0, self.start_monitor)
         
         if self.tray_available and "PYTEST_CURRENT_TEST" not in os.environ:
             QTimer.singleShot(2000, self.finish_startup)
@@ -217,19 +402,19 @@ class SmartSortGUI(QMainWindow):
         self.tray_manager = TrayStateManager(self.tray_icon, self)
         self.tray_manager.set_startup()
         
-        menu = QMenu()
+        menu = QMenu(self)
         
         act_dashboard = menu.addAction("Open Dashboard")
         act_dashboard.triggered.connect(lambda: self.show_tab(0))
         
         act_rules = menu.addAction("Open Rules")
-        act_rules.triggered.connect(lambda: self.show_tab(2))
+        act_rules.triggered.connect(lambda: self.show_tab(self.tabs.indexOf(self.tab_rules)))
         
         act_tester = menu.addAction("Open Rule Tester")
-        act_tester.triggered.connect(lambda: self.show_tab(4))
+        act_tester.triggered.connect(lambda: self.show_tab(self.tabs.indexOf(self.tab_tester)))
         
         act_settings = menu.addAction("Open Settings")
-        act_settings.triggered.connect(lambda: self.show_tab(3))
+        act_settings.triggered.connect(lambda: self.show_tab(self.tabs.indexOf(self.tab_settings)))
         
         menu.addSeparator()
         
@@ -281,9 +466,11 @@ class SmartSortGUI(QMainWindow):
         from PyQt6.QtWidgets import QMessageBox
         from PyQt6.QtGui import QPixmap
         from PyQt6.QtCore import Qt
+        from src.utils.paths import AppPaths
+        from src.version import VERSION
         msg = QMessageBox(self)
         msg.setWindowTitle("About SmartSort")
-        msg.setText("<b>SmartSort File Organizer</b><br>Version 2.0.0<br><br>An intelligent, rule-based daemon and GUI to organize your downloads folder automatically.")
+        msg.setText(f"<b>SmartSort File Organizer</b><br>Version {VERSION}<br><br>An intelligent, rule-based daemon and GUI to organize your downloads folder automatically.")
         
         logo_path = AppPaths.resource_dir() / "icons" / "logo.png"
         if logo_path.is_file():
@@ -301,9 +488,12 @@ class SmartSortGUI(QMainWindow):
     def pause_monitoring(self):
         self.monitoring_active = False
         self.lbl_monitoring_val.setText("Paused")
+        self.set_label_tone(self.lbl_monitoring_val, "warning")
+        self.btn_toggle_monitor.setText("Resume monitoring")
         self.lbl_status.setText("Status: Monitoring Paused")
-        self.act_pause.setEnabled(False)
-        self.act_resume.setEnabled(True)
+        if hasattr(self, "act_pause"):
+            self.act_pause.setEnabled(False)
+            self.act_resume.setEnabled(True)
         self.logger.info("Monitoring paused by user")
         if self.tray_available:
             active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
@@ -312,9 +502,12 @@ class SmartSortGUI(QMainWindow):
     def resume_monitoring(self):
         self.monitoring_active = True
         self.lbl_monitoring_val.setText("Running")
+        self.set_label_tone(self.lbl_monitoring_val, "success")
+        self.btn_toggle_monitor.setText("Pause monitoring")
         self.lbl_status.setText("Status: Monitoring Downloads...")
-        self.act_pause.setEnabled(True)
-        self.act_resume.setEnabled(False)
+        if hasattr(self, "act_pause"):
+            self.act_pause.setEnabled(True)
+            self.act_resume.setEnabled(False)
         self.logger.info("Monitoring resumed by user")
         if self.tray_available:
             active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
@@ -324,7 +517,7 @@ class SmartSortGUI(QMainWindow):
         QMessageBox.information(
             self, "Statistics", 
             f"Files Processed: {self.stats['processed']}\n"
-            f"Duplicates Skipped: {self.stats['duplicates']}\n"
+            f"Duplicate sources removed: {self.stats['duplicates']}\n"
             f"Errors Encountered: {self.stats['errors']}"
         )
 
@@ -342,6 +535,9 @@ class SmartSortGUI(QMainWindow):
     def restart_application(self):
         self.really_exit = True
         self.close()
+        guard = getattr(self, "_instance_guard", None)
+        if guard is not None:
+            guard.close()
         import subprocess
         subprocess.Popen([sys.executable, sys.argv[0]] + sys.argv[1:])
         QApplication.quit()
@@ -352,480 +548,39 @@ class SmartSortGUI(QMainWindow):
         QApplication.quit()
 
     def is_system_dark_mode(self) -> bool:
-        try:
-            import subprocess
-            res = subprocess.run(
-                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-                capture_output=True, text=True, check=False, timeout=2.0
-            )
-            if "prefer-dark" in res.stdout:
-                return True
-        except Exception:
-            pass
-        return False
+        # Use Qt's platform preference; do not spawn gsettings on every change.
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorScheme") and hints.colorScheme() != Qt.ColorScheme.Unknown:
+            return hints.colorScheme() == Qt.ColorScheme.Dark
+        from PyQt6.QtGui import QPalette
+        return QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
     def apply_theme(self):
+        from src.gui.theme import DARK, LIGHT, palette, stylesheet
         theme_setting = self.config.get("theme", "system")
-        is_dark = False
-        if theme_setting == "dark":
-            is_dark = True
-        elif theme_setting == "light":
-            is_dark = False
-        else:
-            is_dark = self.is_system_dark_mode()
-            
-        if is_dark:
-            qss = """
-            QWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-                font-size: 13px;
-            }
-            QMainWindow {
-                background-color: #1a1a1a;
-            }
-            QTabWidget::pane {
-                border: 1px solid #303030;
-                background-color: #1e1e1e;
-                border-radius: 8px;
-            }
-            QTabBar::tab {
-                background-color: #2b2b2b;
-                color: #b0b0b0;
-                padding: 10px 20px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                margin-right: 4px;
-                border: 1px solid #303030;
-                border-bottom: none;
-                font-weight: 500;
-            }
-            QTabBar::tab:hover {
-                background-color: #353535;
-                color: #ffffff;
-            }
-            QTabBar::tab:selected {
-                background-color: #1e1e1e;
-                color: #ffffff;
-                font-weight: bold;
-                border-bottom: 2px solid #3584e4;
-            }
-            QFrame {
-                background-color: transparent;
-            }
-            QFrame.Card {
-                background-color: #262626;
-                border: 1px solid #333333;
-                border-radius: 12px;
-                padding: 12px;
-            }
-            QFrame.Card:hover {
-                border-color: #3584e4;
-                background-color: #2d2d2d;
-            }
-            QLabel {
-                background-color: transparent;
-                color: #e0e0e0;
-            }
-            QLabel#card_title {
-                font-size: 11px;
-                font-weight: bold;
-                color: #909090;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            QLabel#card_value {
-                font-size: 18px;
-                font-weight: bold;
-                color: #ffffff;
-            }
-            QCheckBox, QRadioButton {
-                background-color: transparent;
-                color: #e0e0e0;
-                spacing: 8px;
-            }
-            QCheckBox::indicator, QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                background-color: #2b2b2b;
-            }
-            QCheckBox::indicator:hover, QRadioButton::indicator:hover {
-                border-color: #3584e4;
-                background-color: #323232;
-            }
-            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-                background-color: #3584e4;
-                border-color: #3584e4;
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path fill='%23ffffff' d='M14.8 5.3L8.1 12 5.2 9.1c-.4-.4-1-.4-1.4 0s-.4 1 0 1.4l3.5 3.5c.2.2.4.3.7.3.3 0 .5-.1.7-.3l7.4-7.4c.4-.4.4-1 0-1.4s-1-.4-1.4 0z'/></svg>");
-            }
-            QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {
-                background-color: #1b6acb;
-                border-color: #1b6acb;
-            }
-            QGroupBox {
-                border: 1px solid #333333;
-                border-radius: 8px;
-                margin-top: 16px;
-                font-weight: bold;
-                color: #ffffff;
-                background-color: #242424;
-                padding-top: 16px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 15px;
-                padding: 0 5px 0 5px;
-                background-color: #1e1e1e;
-            }
-            QScrollArea {
-                border: none;
-                background-color: #1e1e1e;
-            }
-            QScrollArea::viewport {
-                background-color: #1e1e1e;
-            }
-            QScrollArea > QWidget > QWidget {
-                background-color: #1e1e1e;
-            }
-            QLineEdit, QTextEdit, QTableWidget, QListWidget, QComboBox, QSpinBox {
-                background-color: #181818;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                padding: 8px;
-                color: #e0e0e0;
-            }
-            QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
-                border: 1px solid #3584e4;
-            }
-            QHeaderView::section {
-                background-color: #262626;
-                color: #e0e0e0;
-                padding: 6px;
-                border: 1px solid #303030;
-                font-weight: bold;
-            }
-            QTableCornerButton::section {
-                background-color: #262626;
-                border: 1px solid #303030;
-            }
-            QComboBox::drop-down {
-                border: none;
-                background: transparent;
-            }
-            QPushButton {
-                background-color: #2a2a2a;
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                padding: 8px 16px;
-                color: #e0e0e0;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #353535;
-                border-color: #4a4a4a;
-            }
-            QPushButton:pressed {
-                background-color: #404040;
-            }
-            QPushButton:disabled {
-                background-color: #1e1e1e;
-                color: #666666;
-                border-color: #2a2a2a;
-            }
-            QPushButton#primary {
-                background-color: #3584e4;
-                color: white;
-                border: none;
-            }
-            QPushButton#primary:hover {
-                background-color: #1b6acb;
-            }
-            QPushButton#primary:pressed {
-                background-color: #1555a3;
-            }
-            code {
-                background-color: #262626;
-                color: #e0e0e0;
-                padding: 2px 4px;
-                border-radius: 4px;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #181818;
-                width: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #3e3e3e;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #555555;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                border: none;
-                background: none;
-            }
-            QScrollBar:horizontal {
-                border: none;
-                background: #181818;
-                height: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #3e3e3e;
-                min-width: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background: #555555;
-            }
-            QProgressBar {
-                border: 1px solid #333333;
-                border-radius: 6px;
-                text-align: center;
-                background-color: #181818;
-                color: #ffffff;
-                font-size: 11px;
-                font-weight: bold;
-                height: 18px;
-            }
-            QProgressBar::chunk {
-                background-color: #3584e4;
-                border-radius: 5px;
-            }
-            """
-        else:
-            qss = """
-            QWidget {
-                background-color: #f6f5f4;
-                color: #2e3436;
-                font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-                font-size: 13px;
-            }
-            QMainWindow {
-                background-color: #f6f5f4;
-            }
-            QTabWidget::pane {
-                border: 1px solid #e1dedb;
-                background-color: #ffffff;
-                border-radius: 8px;
-            }
-            QTabBar::tab {
-                background-color: #e1dedb;
-                color: #505050;
-                padding: 10px 20px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                margin-right: 4px;
-                border: 1px solid #e1dedb;
-                border-bottom: none;
-                font-weight: 500;
-            }
-            QTabBar::tab:hover {
-                background-color: #eae7e4;
-                color: #2e3436;
-            }
-            QTabBar::tab:selected {
-                background-color: #ffffff;
-                color: #2e3436;
-                font-weight: bold;
-                border-bottom: 2px solid #3584e4;
-            }
-            QFrame {
-                background-color: transparent;
-            }
-            QFrame.Card {
-                background-color: #ffffff;
-                border: 1px solid #e1dedb;
-                border-radius: 12px;
-                padding: 12px;
-            }
-            QFrame.Card:hover {
-                border-color: #3584e4;
-                background-color: #faf9f9;
-            }
-            QLabel {
-                background-color: transparent;
-                color: #2e3436;
-            }
-            QLabel#card_title {
-                font-size: 11px;
-                font-weight: bold;
-                color: #777777;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            QLabel#card_value {
-                font-size: 18px;
-                font-weight: bold;
-                color: #2e3436;
-            }
-            QCheckBox, QRadioButton {
-                background-color: transparent;
-                color: #2e3436;
-                spacing: 8px;
-            }
-            QCheckBox::indicator, QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid #c0bab4;
-                border-radius: 4px;
-                background-color: #ffffff;
-            }
-            QCheckBox::indicator:hover, QRadioButton::indicator:hover {
-                border-color: #3584e4;
-                background-color: #f6f5f4;
-            }
-            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-                background-color: #3584e4;
-                border-color: #3584e4;
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path fill='%23ffffff' d='M14.8 5.3L8.1 12 5.2 9.1c-.4-.4-1-.4-1.4 0s-.4 1 0 1.4l3.5 3.5c.2.2.4.3.7.3.3 0 .5-.1.7-.3l7.4-7.4c.4-.4.4-1 0-1.4s-1-.4-1.4 0z'/></svg>");
-            }
-            QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {
-                background-color: #1b6acb;
-                border-color: #1b6acb;
-            }
-            QPushButton {
-                background-color: #e1dedb;
-                border: 1px solid #c0bab4;
-                border-radius: 6px;
-                padding: 8px 16px;
-                color: #2e3436;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #d5d1cc;
-            }
-            QPushButton:pressed {
-                background-color: #c0bab4;
-            }
-            QPushButton:disabled {
-                background-color: #f6f5f4;
-                color: #888888;
-                border-color: #e1dedb;
-            }
-            QPushButton#primary {
-                background-color: #3584e4;
-                color: white;
-                border: none;
-            }
-            QPushButton#primary:hover {
-                background-color: #1b6acb;
-            }
-            QPushButton#primary:pressed {
-                background-color: #1555a3;
-            }
-            QLineEdit, QTextEdit, QTableWidget, QListWidget, QComboBox, QSpinBox {
-                background-color: #ffffff;
-                border: 1px solid #e1dedb;
-                border-radius: 6px;
-                padding: 8px;
-                color: #2e3436;
-            }
-            QLineEdit:focus, QTextEdit:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus {
-                border: 1px solid #3584e4;
-            }
-            QGroupBox {
-                border: 1px solid #e1dedb;
-                border-radius: 8px;
-                margin-top: 16px;
-                font-weight: bold;
-                color: #2e3436;
-                background-color: #ffffff;
-                padding-top: 16px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 15px;
-                padding: 0 5px 0 5px;
-                background-color: #f6f5f4;
-            }
-            QScrollArea {
-                border: none;
-                background-color: #f6f5f4;
-            }
-            QScrollArea::viewport {
-                background-color: #f6f5f4;
-            }
-            QScrollArea > QWidget > QWidget {
-                background-color: #f6f5f4;
-            }
-            QHeaderView::section {
-                background-color: #e1dedb;
-                color: #2e3436;
-                padding: 6px;
-                border: 1px solid #c0bab4;
-                font-weight: bold;
-            }
-            QTableCornerButton::section {
-                background-color: #e1dedb;
-                border: 1px solid #c0bab4;
-            }
-            code {
-                background-color: #f0ede9;
-                color: #2e3436;
-                padding: 2px 4px;
-                border-radius: 4px;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #f6f5f4;
-                width: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0bab4;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #a09a94;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                border: none;
-                background: none;
-            }
-            QScrollBar:horizontal {
-                border: none;
-                background: #f6f5f4;
-                height: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #c0bab4;
-                min-width: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background: #a09a94;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                border: none;
-                background: none;
-            }
-            QProgressBar {
-                border: 1px solid #dcdcdc;
-                border-radius: 6px;
-                text-align: center;
-                background-color: #f0f0f0;
-                color: #2e3436;
-                font-size: 11px;
-                font-weight: bold;
-                height: 18px;
-            }
-            QProgressBar::chunk {
-                background-color: #3584e4;
-                border-radius: 5px;
-            }
-            """
-        self.setStyleSheet(qss)
+        self.is_dark_theme = (theme_setting == "dark" or
+                              (theme_setting == "system" and self.is_system_dark_mode()))
+        self.theme_colors = DARK if self.is_dark_theme else LIGHT
+        self.setPalette(palette(self.theme_colors))
+        self.setStyleSheet(stylesheet(self.theme_colors))
+        for combo in (self.theme_picker, self.cmb_theme):
+            combo.blockSignals(True)
+            combo.setCurrentIndex({"system": 0, "dark": 1, "light": 2}.get(theme_setting, 0))
+            combo.blockSignals(False)
+
+    def change_theme(self, index):
+        self.config.set("theme", ("system", "dark", "light")[index])
+        self.apply_theme()
+
+    def on_system_theme_changed(self, _scheme):
+        if self.config.get("theme", "system") == "system":
+            self.apply_theme()
+
+    @staticmethod
+    def set_label_tone(label, tone):
+        label.setProperty("tone", tone)
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def create_card(self, title, val):
         from PyQt6.QtWidgets import QFrame
@@ -836,12 +591,14 @@ class SmartSortGUI(QMainWindow):
         
         layout = QVBoxLayout(card)
         layout.setSpacing(4)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(18, 16, 18, 16)
         
         lbl_title = QLabel(title)
         lbl_title.setObjectName("card_title")
+        lbl_title.setWordWrap(True)
         lbl_val = QLabel(val)
         lbl_val.setObjectName("card_value")
+        lbl_val.setWordWrap(True)
         
         layout.addWidget(lbl_title)
         layout.addWidget(lbl_val)
@@ -855,23 +612,17 @@ class SmartSortGUI(QMainWindow):
         
         mon_status = "Running" if getattr(self, "monitoring_active", True) else "Paused"
         self.lbl_monitoring_val.setText(mon_status)
-        if mon_status == "Running":
-            self.lbl_monitoring_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ec27e;")
-        else:
-            self.lbl_monitoring_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #e01b24;")
-            
-        svc_status = self.get_service_status()
+        self.set_label_tone(self.lbl_monitoring_val, "success" if self.monitoring_active else "warning")
+        self.btn_toggle_monitor.setText("Pause monitoring" if self.monitoring_active else "Resume monitoring")
+        svc_status = self._service_status
         self.lbl_service_val.setText(svc_status)
-        if svc_status == "Running":
-            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ec27e;")
-        elif svc_status == "Stopped":
-            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #f5c211;")
-        else:
-            self.lbl_service_val.setStyleSheet("font-size: 16px; font-weight: bold; color: #e01b24;")
-            
+        self.set_label_tone(self.lbl_service_val, "success" if svc_status == "Running" else "warning")
+
         active_rules = len([r for r in self.organizer.rule_manager.rules if r.enabled])
         total_rules = len(self.organizer.rule_manager.rules)
-        self.lbl_rules_val.setText(f"{active_rules} / {total_rules}")
+        manual_rules = sum(r.enabled and r.apply_in_intelligence for r in self.organizer.rule_manager.rules)
+        self.lbl_rules_val.setText((f"{manual_rules} manual" if manual_rules else "Not applied")
+            if self.config.get("sorting_mode", "rules_first") == "intelligence" else f"{active_rules} / {total_rules}")
         
         self.lbl_activity_val.setText(getattr(self, "last_activity_time", "Never"))
         
@@ -887,6 +638,12 @@ class SmartSortGUI(QMainWindow):
                 self.btn_restart_service.setEnabled(False)
                 self.btn_enable_service.setEnabled(False)
                 self.btn_disable_service.setEnabled(False)
+            elif svc_status in ("Checking…", "Unavailable"):
+                for button in (self.btn_install_service, self.btn_remove_service,
+                               self.btn_start_service, self.btn_stop_service,
+                               self.btn_restart_service, self.btn_enable_service,
+                               self.btn_disable_service):
+                    button.setEnabled(False)
             else:
                 self.btn_install_service.setEnabled(False)
                 self.btn_remove_service.setEnabled(True)
@@ -894,19 +651,8 @@ class SmartSortGUI(QMainWindow):
                 self.btn_stop_service.setEnabled(svc_status == "Running")
                 self.btn_restart_service.setEnabled(svc_status == "Running")
 
-                is_enabled_now = False
-                try:
-                    import subprocess
-                    res_enabled = subprocess.run(
-                        ["systemctl", "--user", "is-enabled", "smartsort.service"],
-                        capture_output=True, text=True, check=False, timeout=2.0
-                    )
-                    is_enabled_now = (res_enabled.stdout.strip() == "enabled")
-                except Exception:
-                    is_enabled_now = (svc_status == "Stopped")
-
-                self.btn_enable_service.setEnabled(not is_enabled_now)
-                self.btn_disable_service.setEnabled(is_enabled_now)
+                self.btn_enable_service.setEnabled(not self._service_enabled)
+                self.btn_disable_service.setEnabled(self._service_enabled)
                 
         from src.gui.tray_manager import TrayState
         if self.tray_available and self.tray_manager.current_state in [TrayState.IDLE, TrayState.PAUSED, TrayState.ERROR]:
@@ -914,6 +660,20 @@ class SmartSortGUI(QMainWindow):
                 self.tray_manager.set_monitoring(self.stats.get("processed", 0), active_rules)
             else:
                 self.tray_manager.set_paused(self.stats.get("processed", 0), active_rules)
+
+    def refresh_dashboard(self):
+        self.update_dashboard_stats()
+        if self._service_worker is None:
+            worker = ServiceStatusWorker(self.get_service_status)
+            worker.signals.ready.connect(self.on_service_status_ready)
+            self._service_worker = worker
+            self.threadpool.start(worker)
+
+    def on_service_status_ready(self, status, enabled):
+        self._service_status = status
+        self._service_enabled = enabled
+        self._service_worker = None
+        self.update_dashboard_stats()
 
     def verify_and_repair_startup_config(self):
         # 1. Verify autostart desktop entry
@@ -1202,86 +962,243 @@ WantedBy=default.target
             pass
 
     def init_ui(self):
+        shell = QWidget()
+        shell.setObjectName("shell")
+        outer = QHBoxLayout(shell)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.setCentralWidget(shell)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(188)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(16, 28, 16, 22)
+        side.setSpacing(5)
+        mark = QLabel("S")
+        mark.setObjectName("brandMark")
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setFixedSize(42, 42)
+        side.addWidget(mark)
+        brand = QLabel("SmartSort")
+        brand.setObjectName("brand")
+        side.addWidget(brand)
+        tagline = QLabel("A place for every file.")
+        tagline.setProperty("role", "muted")
+        side.addWidget(tagline)
+        side.addSpacing(30)
+        eyebrow = QLabel("WORKSPACE")
+        eyebrow.setObjectName("eyebrow")
+        side.addWidget(eyebrow)
+        side.addSpacing(8)
+
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        
+        self.tabs.tabBar().hide()
         self.tab_dashboard = QWidget()
         self.tab_organizer = QWidget()
         self.tab_logs = QWidget()
         self.tab_rules = QWidget()
         self.tab_settings = QWidget()
         self.tab_tester = QWidget()
-        
-        self.tabs.addTab(self.tab_dashboard, "Dashboard")
-        self.tabs.addTab(self.tab_organizer, "Directory Organizer")
-        self.tabs.addTab(self.tab_logs, "Logs")
-        self.tabs.addTab(self.tab_rules, "Rules")
-        self.tabs.addTab(self.tab_settings, "Settings")
-        self.tabs.addTab(self.tab_tester, "Rule Tester")
-        
+        pages = [
+            (self.tab_dashboard, "Dashboard", "Overview", "Your files, quietly in order."),
+            (self.tab_organizer, "Directory Organizer", "Organize a folder", "Preview the plan, then organize with confidence."),
+            (self.tab_logs, "Logs", "Activity history", "A clear record of every file operation."),
+            (self.tab_rules, "Rules", "Sorting rules", "Make your filing system work your way."),
+            (self.tab_settings, "Settings", "Preferences", "Fine-tune the details of your workspace."),
+            (self.tab_tester, "Rule Tester", "Rule tester", "Preview sorting decisions and evidence without moving files."),
+        ]
+        self.page_details = [(title, subtitle) for _, _, title, subtitle in pages]
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.nav_buttons = []
+        for i, (page, name, _, _) in enumerate(pages):
+            self.tabs.addTab(page, name)
+            button = QPushButton("Organize folder" if page is self.tab_organizer else name)
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            button.setToolTip(name)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.nav_group.addButton(button, i)
+            self.nav_buttons.append(button)
+            side.addWidget(button)
+        self.nav_group.idClicked.connect(self.tabs.setCurrentIndex)
+        self.nav_buttons[0].setChecked(True)
+        side.addStretch()
+        from src.version import VERSION
+        footer = QLabel(f"LOCAL & PRIVATE\nSmartSort {VERSION}")
+        footer.setProperty("role", "muted")
+        side.addWidget(footer)
+        outer.addWidget(sidebar)
+
+        workspace = QVBoxLayout()
+        workspace.setContentsMargins(0, 0, 0, 0)
+        workspace.setSpacing(0)
+        header = QFrame()
+        header.setObjectName("pageHeader")
+        head = QHBoxLayout(header)
+        head.setContentsMargins(26, 24, 26, 22)
+        titles = QVBoxLayout()
+        titles.setSpacing(6)
+        self.page_title = QLabel(self.page_details[0][0])
+        self.page_title.setObjectName("pageTitle")
+        self.page_subtitle = QLabel(self.page_details[0][1])
+        self.page_subtitle.setObjectName("pageSubtitle")
+        self.page_subtitle.setWordWrap(True)
+        titles.addWidget(self.page_title)
+        titles.addWidget(self.page_subtitle)
+        head.addLayout(titles, 1)
+        theme_box = QVBoxLayout()
+        theme_caption = QLabel("APPEARANCE")
+        theme_caption.setObjectName("eyebrow")
+        self.theme_picker = QComboBox()
+        self.theme_picker.setAccessibleName("Application appearance")
+        self.theme_picker.addItems(["System", "Dark", "Light"])
+        self.theme_picker.setMinimumWidth(112)
+        theme_box.addWidget(theme_caption)
+        theme_box.addWidget(self.theme_picker)
+        head.addLayout(theme_box)
+        workspace.addWidget(header)
+        workspace.addWidget(self.tabs, 1)
+        outer.addLayout(workspace, 1)
+        self.tabs.currentChanged.connect(self.on_page_changed)
+
         self.setup_dashboard()
         self.setup_directory_organizer()
         self.setup_logs()
         self.setup_settings()
         self.setup_rules()
         self.setup_tester()
+        self.theme_picker.currentIndexChanged.connect(self.change_theme)
+        self.cmb_theme.currentIndexChanged.connect(self.change_theme)
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(self.on_system_theme_changed)
+        for table in (self.table_logs, self.table_rules):
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setShowGrid(False)
+            table.verticalHeader().hide()
+            table.verticalHeader().setDefaultSectionSize(38)
+            table.horizontalHeader().setMinimumSectionSize(70)
+        self.log_display.setPlaceholderText("All clear. New file activity will appear here.")
+        self.txt_organize_summary.setPlaceholderText("Choose a folder and preview the planned moves to get started.")
+        self.refresh_logs()
+
+    def on_page_changed(self, index):
+        self.nav_buttons[index].setChecked(True)
+        title, subtitle = self.page_details[index]
+        self.page_title.setText(title)
+        self.page_subtitle.setText(subtitle)
+        if self.tabs.widget(index) is self.tab_logs:
+            self.refresh_logs()
+
+    @staticmethod
+    def scroll_page(page, content):
+        """Keep every control reachable on small windows and scaled displays."""
+        content.setObjectName("scrollContent")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(content)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(scroll)
+
+    @staticmethod
+    def _sorting_mode_description(mode):
+        if mode == "intelligence":
+            return "Content, filenames and context choose destinations. Marked manual rules apply; other saved rules are not applied."
+        return "Matching rules choose destinations first. Content intelligence handles only unmatched files."
+
+    def _sorting_mode_card(self):
+        card = QFrame()
+        card.setProperty("class", "Card")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        description = QLabel()
+        description.setTextFormat(Qt.TextFormat.PlainText)
+        description.setWordWrap(True)
+        layout.addWidget(description, 1)
+        button = QPushButton("Change mode")
+        button.setAccessibleName("Change sorting mode")
+        button.clicked.connect(self._open_sorting_mode_settings)
+        layout.addWidget(button)
+        self._sorting_mode_labels.append(description)
+        self._refresh_sorting_mode_summary()
+        return card
+
+    def _refresh_sorting_mode_summary(self):
+        if hasattr(self, "lbl_test_match"):
+            self._invalidate_tester_result()
+        mode = self.config.get("sorting_mode", "rules_first")
+        if mode == "intelligence":
+            title = "Sorting mode: Content intelligence"
+        else:
+            count = sum(rule.enabled for rule in self.organizer.rule_manager.rules)
+            title = f"Sorting mode: Rules first ({count} enabled)"
+        if hasattr(self, "lbl_rules_val"):
+            active = sum(rule.enabled for rule in self.organizer.rule_manager.rules)
+            total = len(self.organizer.rule_manager.rules)
+            manual = sum(r.enabled and r.apply_in_intelligence for r in self.organizer.rule_manager.rules)
+            self.lbl_rules_val.setText((f"{manual} manual" if manual else "Not applied") if mode == "intelligence" else f"{active} / {total}")
+        for label in self._sorting_mode_labels:
+            label.setText(title + "\n" + self._sorting_mode_description(mode))
+
+    def _open_sorting_mode_settings(self):
+        self.tabs.setCurrentWidget(self.tab_settings)
+        for scroll in self.tab_settings.findChildren(QScrollArea):
+            scroll.ensureWidgetVisible(self.cmb_sorting_mode)
+        self.cmb_sorting_mode.setFocus()
 
     def setup_dashboard(self):
-        from PyQt6.QtWidgets import QFrame, QGridLayout
-        main_layout = QVBoxLayout()
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        
-        # Header layout
-        header_layout = QHBoxLayout()
-        lbl_header = QLabel("SmartSort Dashboard")
-        lbl_header.setObjectName("dashboard_header_title")
-        lbl_header.setStyleSheet("font-size: 20px; font-weight: bold;")
-        header_layout.addWidget(lbl_header)
-        header_layout.addStretch()
-        main_layout.addLayout(header_layout)
-        
-        # Grid of cards
+        from PyQt6.QtWidgets import QGridLayout
+        content = QWidget()
+        main_layout = QVBoxLayout(content)
+        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(26, 24, 26, 24)
+        main_layout.addWidget(self._sorting_mode_card())
         grid_layout = QGridLayout()
         grid_layout.setSpacing(12)
-        
-        self.card_processed, self.lbl_processed_val = self.create_card("Files Processed", "0")
-        self.card_duplicates, self.lbl_duplicates_val = self.create_card("Duplicates Skipped", "0")
-        self.card_errors, self.lbl_errors_val = self.create_card("Errors Encountered", "0")
-        self.card_monitoring, self.lbl_monitoring_val = self.create_card("Monitoring Status", "Running")
-        self.card_service, self.lbl_service_val = self.create_card("Service Status", "Checking...")
-        self.card_rules, self.lbl_rules_val = self.create_card("Rules Active", "0")
-        self.card_activity, self.lbl_activity_val = self.create_card("Last Activity", "Never")
-        
-        grid_layout.addWidget(self.card_processed, 0, 0)
-        grid_layout.addWidget(self.card_duplicates, 0, 1)
-        grid_layout.addWidget(self.card_errors, 0, 2)
-        grid_layout.addWidget(self.card_monitoring, 0, 3)
-        grid_layout.addWidget(self.card_service, 1, 0)
-        grid_layout.addWidget(self.card_rules, 1, 1)
-        grid_layout.addWidget(self.card_activity, 1, 2, 1, 2) # spanning 2 columns
-        
+        self.card_processed, self.lbl_processed_val = self.create_card("Files processed", "0")
+        self.card_duplicates, self.lbl_duplicates_val = self.create_card("Duplicate sources removed", "0")
+        self.card_errors, self.lbl_errors_val = self.create_card("Errors encountered", "0")
+        self.card_monitoring, self.lbl_monitoring_val = self.create_card("Download monitor", "Running")
+        self.card_service, self.lbl_service_val = self.create_card("Background service", "Checking…")
+        self.card_rules, self.lbl_rules_val = self.create_card("Configured rules", "0")
+        self.card_activity, self.lbl_activity_val = self.create_card("Last activity", "Never")
+        for col, card in enumerate((self.card_processed, self.card_duplicates, self.card_errors)):
+            grid_layout.addWidget(card, 0, col)
+            grid_layout.setColumnStretch(col, 1)
+        for col, card in enumerate((self.card_monitoring, self.card_service, self.card_rules)):
+            grid_layout.addWidget(card, 1, col)
+        grid_layout.addWidget(self.card_activity, 2, 0, 1, 3)
         main_layout.addLayout(grid_layout)
-        
-        # Status layout
+
         status_card = QFrame()
         status_card.setProperty("class", "Card")
         status_layout = QHBoxLayout(status_card)
-        status_layout.setContentsMargins(12, 10, 12, 10)
-        self.lbl_status = QLabel("Status: Monitoring Downloads...")
-        self.lbl_status.setStyleSheet("font-weight: bold; font-size: 13px;")
-        status_layout.addWidget(self.lbl_status)
-        status_layout.addStretch()
+        status_layout.setContentsMargins(18, 14, 18, 14)
+        self.lbl_status = QLabel("Monitoring your Downloads folder")
+        self.lbl_status.setWordWrap(True)
+        status_layout.addWidget(self.lbl_status, 1)
+        self.btn_toggle_monitor = QPushButton("Pause monitoring")
+        self.btn_toggle_monitor.clicked.connect(
+            lambda: self.pause_monitoring() if self.monitoring_active else self.resume_monitoring())
+        status_layout.addWidget(self.btn_toggle_monitor)
+        btn_folder = QPushButton("Organize a folder")
+        btn_folder.setObjectName("primary")
+        btn_folder.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_organizer))
+        status_layout.addWidget(btn_folder)
         main_layout.addWidget(status_card)
-        
-        # Log display
-        main_layout.addWidget(QLabel("Recent Activity (Daemon Logs):"))
-        self.log_display = QTextEdit()
+        activity_title = QLabel("Recent activity")
+        activity_title.setObjectName("sectionTitle")
+        main_layout.addWidget(activity_title)
+        self.log_display = QPlainTextEdit()
         self.log_display.setReadOnly(True)
-        self.log_display.setStyleSheet("font-family: 'Courier New', monospace; font-size: 11px;")
-        main_layout.addWidget(self.log_display)
-        
-        self.tab_dashboard.setLayout(main_layout)
+        self.log_display.setMaximumBlockCount(500)
+        self.log_display.setMinimumHeight(140)
+        main_layout.addWidget(self.log_display, 1)
+        self.scroll_page(self.tab_dashboard, content)
 
     def setup_directory_organizer(self):
         from PyQt6.QtWidgets import QFrame, QProgressBar
@@ -1289,10 +1206,6 @@ WantedBy=default.target
         main_layout.setSpacing(12)
         main_layout.setContentsMargins(16, 16, 16, 16)
         
-        # Header
-        lbl_header = QLabel("Directory Organizer")
-        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
-        main_layout.addWidget(lbl_header)
         
         # Target Directory Card
         dir_card = QFrame()
@@ -1315,9 +1228,10 @@ WantedBy=default.target
         dir_input_layout.addWidget(self.btn_browse_dir)
         dir_layout.addLayout(dir_input_layout)
         
-        options_layout = QHBoxLayout()
-        self.chk_recursive = QCheckBox("Include subdirectories (Recursive)")
-        self.chk_recursive.setChecked(self.config.get("dir_organizer_recursive", False))
+        options_layout = QVBoxLayout()
+        self.chk_recursive = QCheckBox("Include subfolders")
+        self.chk_recursive.setToolTip("Analyze nested files beneath the selected folder. Application and project bundles stay intact.")
+        self.chk_recursive.setChecked(self._folder_recursion_enabled())
         self.chk_gen_report = QCheckBox("Generate Arrangement Index (SmartSort_Arrangement.md)")
         self.chk_gen_report.setChecked(self.config.get("dir_organizer_generate_markdown", True))
         options_layout.addWidget(self.chk_recursive)
@@ -1327,10 +1241,12 @@ WantedBy=default.target
         
         main_layout.addWidget(dir_card)
         
+        main_layout.addWidget(self._sorting_mode_card())
+
         # Action Controls Layout
         actions_layout = QHBoxLayout()
         self.btn_preview = QPushButton("Preview / Dry Run")
-        self.btn_organize = QPushButton("Organize Directory")
+        self.btn_organize = QPushButton("Review moves")
         self.btn_organize.setObjectName("primary")
         self.btn_cancel_organize = QPushButton("Cancel")
         self.btn_cancel_organize.setEnabled(False)
@@ -1349,13 +1265,16 @@ WantedBy=default.target
         prog_layout.setContentsMargins(12, 12, 12, 12)
         
         self.lbl_organize_status = QLabel("Status: Ready")
+        self.lbl_organize_status.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_organize_status.setStyleSheet("font-weight: bold;")
         self.progress_organize = QProgressBar()
         self.progress_organize.setRange(0, 100)
         self.progress_organize.setValue(0)
-        self.progress_organize.setTextVisible(True)
+        self.progress_organize.setTextVisible(False)
         self.lbl_organize_details = QLabel("No active operation")
-        self.lbl_organize_details.setStyleSheet("color: #888888; font-size: 11px;")
+        self.lbl_organize_details.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_organize_details.setProperty("role", "muted")
+        self.lbl_organize_details.setWordWrap(True)
         
         prog_layout.addWidget(self.lbl_organize_status)
         prog_layout.addWidget(self.progress_organize)
@@ -1369,14 +1288,28 @@ WantedBy=default.target
         res_layout.setSpacing(8)
         res_layout.setContentsMargins(12, 12, 12, 12)
         
-        self.lbl_results_title = QLabel("Execution Summary:")
+        self.lbl_results_title = QLabel("Review proposed moves")
         self.lbl_results_title.setStyleSheet("font-weight: bold;")
         res_layout.addWidget(self.lbl_results_title)
         
-        self.txt_organize_summary = QTextEdit()
+        self.txt_organize_summary = QPlainTextEdit()
         self.txt_organize_summary.setReadOnly(True)
-        self.txt_organize_summary.setStyleSheet("font-family: 'Courier New', monospace; font-size: 11px;")
+        self.txt_organize_summary.setMinimumHeight(220)
+        self.txt_organize_summary.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.txt_organize_summary.setStyleSheet("font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
         res_layout.addWidget(self.txt_organize_summary)
+
+        evidence_layout = QHBoxLayout()
+        self.cmb_review_file = QComboBox()
+        self.cmb_review_file.setMinimumContentsLength(18)
+        self.cmb_review_file.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_review_file.setToolTip("Choose a reviewed file to inspect all of its evidence.")
+        self.btn_inspect_evidence = QPushButton("Inspect evidence…")
+        self.btn_inspect_evidence.setEnabled(False)
+        self.cmb_review_file.setEnabled(False)
+        evidence_layout.addWidget(self.cmb_review_file, 1)
+        evidence_layout.addWidget(self.btn_inspect_evidence)
+        res_layout.addLayout(evidence_layout)
         
         btn_results_layout = QHBoxLayout()
         self.btn_open_target_folder = QPushButton("Open Folder")
@@ -1387,15 +1320,24 @@ WantedBy=default.target
         btn_results_layout.addWidget(self.btn_open_arrangement_md)
         btn_results_layout.addStretch()
         res_layout.addLayout(btn_results_layout)
+        self.undo_layout = QVBoxLayout()
+        res_layout.addLayout(self.undo_layout)
+        self.undo_offers = []
+        self.undo_timer = QTimer(self)
+        self.undo_timer.setInterval(1000)
+        self.undo_timer.timeout.connect(self._refresh_undo_offers)
         
         main_layout.addWidget(results_card)
         
-        self.tab_organizer.setLayout(main_layout)
+        content = QWidget()
+        content.setLayout(main_layout)
+        self.scroll_page(self.tab_organizer, content)
         
         # Connect signals
         self.btn_browse_dir.clicked.connect(self.on_browse_target_dir)
         self.btn_preview.clicked.connect(self.on_preview_dir)
         self.btn_organize.clicked.connect(self.on_organize_dir)
+        self.btn_inspect_evidence.clicked.connect(self.on_inspect_evidence)
         self.btn_cancel_organize.clicked.connect(self.on_cancel_organize)
         self.btn_open_target_folder.clicked.connect(self.on_open_target_folder)
         self.btn_open_arrangement_md.clicked.connect(self.on_open_arrangement_report)
@@ -1411,10 +1353,22 @@ WantedBy=default.target
             self.config.set("dir_organizer_last_path", selected)
             self.config.save_config()
 
+    def _folder_recursion_enabled(self):
+        if self.config.get("sorting_mode", "rules_first") == "intelligence":
+            return self.config.get("intelligence_recursive", True)
+        return self.config.get("dir_organizer_recursive", False)
+
     def on_dir_organizer_options_changed(self):
+        if self._review_key is not None and self._review_key != self._directory_review_key():
+            self._invalidate_dir_review()
         path = self.txt_target_dir.text().strip()
+        if path != self.config.get("dir_organizer_last_path", ""):
+            self.last_report_path = ""
+            self.btn_open_arrangement_md.setEnabled(False)
+            self.btn_open_target_folder.setEnabled(False)
         self.config.set("dir_organizer_last_path", path)
-        self.config.set("dir_organizer_recursive", self.chk_recursive.isChecked())
+        recursive_key = "intelligence_recursive" if self.config.get("sorting_mode", "rules_first") == "intelligence" else "dir_organizer_recursive"
+        self.config.set(recursive_key, self.chk_recursive.isChecked())
         self.config.set("dir_organizer_generate_markdown", self.chk_gen_report.isChecked())
         self.config.save_config()
 
@@ -1430,15 +1384,55 @@ WantedBy=default.target
         if not os.path.isdir(target_dir):
             QMessageBox.warning(self, "Directory Organizer", f"Selected path is not a directory:\n{target_dir}")
             return None
-        if target_dir in DirectoryOrganizer.PROTECTED_ROOTS:
-            QMessageBox.critical(self, "Directory Organizer", f"Cannot organize protected system directory:\n{target_dir}")
+        try:
+            target_dir = self.dir_organizer._validate_root(target_dir)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Directory Organizer", str(exc))
             return None
         return target_dir
 
+    def _directory_review_key(self):
+        if not hasattr(self, "txt_target_dir"):
+            return None
+        settings = tuple(self.config.get(key, default) for key, default in (
+            ("enable_origin_detection", True), ("enable_deep_content_extraction", True),
+            ("conflict_resolution", "rename"), ("enable_duplicate_detection", True),
+            ("sorting_mode", "rules_first")))
+        rules = json.dumps([rule.to_dict() for rule in self.organizer.rule_manager.rules], sort_keys=True)
+        return (os.path.realpath(os.path.expanduser(self.txt_target_dir.text().strip())),
+                self.chk_recursive.isChecked(), self.chk_gen_report.isChecked(), settings, rules)
+
+    def _invalidate_dir_review(self):
+        had_review = self._reviewed_plan is not None
+        self._reviewed_plan = None
+        self._review_key = None
+        self._review_items = []
+        if hasattr(self, "btn_organize"):
+            self.btn_organize.setText("Review moves")
+            self.cmb_review_file.clear()
+            self.cmb_review_file.setEnabled(False)
+            self.btn_inspect_evidence.setEnabled(False)
+            if had_review:
+                self.lbl_organize_details.setText("Review is out of date. Preview again before organizing.")
+
+    def on_inspect_evidence(self):
+        index = self.cmb_review_file.currentIndex()
+        if 0 <= index < len(self._review_items):
+            dialog = EvidenceDialog(self._review_items[index], self)
+            try:
+                dialog.exec()
+            finally:
+                dialog.deleteLater()
+
     def on_preview_dir(self):
+        if self.active_dir_worker is not None:
+            return
         target_dir = self._validate_organizer_input()
         if not target_dir:
             return
+        self.txt_target_dir.setText(target_dir)
+        self._invalidate_dir_review()
+        self.dir_organizer.rule_manager.rules = copy.deepcopy(self.organizer.rule_manager.rules)
             
         self._set_organizer_running_ui(True)
         self.lbl_organize_status.setText("Status: Scanning and planning preview...")
@@ -1449,21 +1443,56 @@ WantedBy=default.target
             organizer=self.dir_organizer,
             root_dir=target_dir,
             mode="preview",
-            recursive=self.chk_recursive.isChecked()
+            recursive=self.chk_recursive.isChecked(),
+            review_key=self._directory_review_key()
         )
         self.active_dir_worker = worker
         worker.signals.preview_ready.connect(self.on_dir_worker_preview_ready)
+        worker.signals.finished.connect(self.on_dir_worker_finished)
         worker.signals.error.connect(self.on_dir_worker_error)
         self.threadpool.start(worker)
 
     def on_organize_dir(self):
+        if self.active_dir_worker is not None:
+            return
         target_dir = self._validate_organizer_input()
         if not target_dir:
             return
+        self.txt_target_dir.setText(target_dir)
+        if self._reviewed_plan is None or self._review_key != self._directory_review_key():
+            self.on_preview_dir()
+            return
+        if not self._reviewed_plan.items:
+            QMessageBox.information(self, "Directory Organizer", "There are no reviewed moves to organize.")
+            return
+        plan = self._reviewed_plan
+        key = self._review_key
+        low = sum(item.confidence in ("UNCERTAIN", "UNKNOWN", "NOT_AVAILABLE") for item in plan.items)
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Organize reviewed moves")
+        confirm.setTextFormat(Qt.TextFormat.PlainText)
+        confirm.setText(f"Move exactly {len(plan.items)} reviewed file(s)?\n\nFolder: {plan.root_dir}\n"
+                        f"Low-confidence moves: {low}\nPlanning warnings: {len(plan.warnings)}\n"
+                        f"Sorting mode: {'Content intelligence' if key[3][4] == 'intelligence' else 'Rules first'}\n\n"
+                        f"Existing files: {key[3][2]}\nDuplicate source removal: {'on (SHA-256 verified)' if key[3][3] else 'off'}\n\n"
+                        "Only the moves listed in this review will run.")
+        confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        confirm.setDefaultButton(QMessageBox.StandardButton.No)
+        try:
+            answer = confirm.exec()
+        finally:
+            confirm.deleteLater()
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if key != self._directory_review_key():
+            self._invalidate_dir_review()
+            return
+        self._executing_review = copy.deepcopy(plan)
+        self._invalidate_dir_review()
             
         self._set_organizer_running_ui(True)
-        self.lbl_organize_status.setText("Status: Scanning files...")
-        self.lbl_organize_details.setText(f"Preparing to organize {target_dir}")
+        self.lbl_organize_status.setText("Status: Organizing reviewed moves…")
+        self.lbl_organize_details.setText(f"Executing {len(plan.items)} reviewed move(s)")
         self.progress_organize.setRange(0, 0)
         
         worker = DirectoryOrganizerWorker(
@@ -1471,7 +1500,9 @@ WantedBy=default.target
             root_dir=target_dir,
             mode="organize",
             recursive=self.chk_recursive.isChecked(),
-            generate_report=self.chk_gen_report.isChecked()
+            generate_report=self.chk_gen_report.isChecked(),
+            plan=plan,
+            execution_options={"conflict_resolution": key[3][2], "enable_duplicate_detection": key[3][3]}
         )
         self.active_dir_worker = worker
         worker.signals.progress.connect(self.on_dir_worker_progress)
@@ -1490,6 +1521,11 @@ WantedBy=default.target
         self.btn_organize.setEnabled(not running)
         self.btn_browse_dir.setEnabled(not running)
         self.btn_cancel_organize.setEnabled(running)
+        self.txt_target_dir.setEnabled(not running)
+        self.chk_recursive.setEnabled(not running)
+        self.chk_gen_report.setEnabled(not running)
+        self.cmb_review_file.setEnabled(not running and bool(self._review_items))
+        self.btn_inspect_evidence.setEnabled(not running and bool(self._review_items))
 
     def on_dir_worker_progress(self, processed: int, total: int, current_file: str):
         if total > 0:
@@ -1504,42 +1540,43 @@ WantedBy=default.target
         self.lbl_organize_details.setText(f"Processing: {current_file}")
 
     def on_dir_worker_preview_ready(self, summary: DirectoryPreviewSummary):
+        worker = self.active_dir_worker
+        if worker is not None and worker.cancel_event.is_set():
+            self.on_dir_worker_finished(OrganizeResult(records=[], cancelled=True), "")
+            return
+        self._invalidate_dir_review()
+        valid = (worker is not None and worker.review_plan is not None and
+                 worker.review_key == self._directory_review_key() and
+                 summary.items == worker.review_plan.items and
+                 summary.total_files == worker.review_plan.total_files and
+                 summary.category_counts == worker.review_plan.category_counts and
+                 summary.cluster_count == worker.review_plan.cluster_count and
+                 summary.warnings == worker.review_plan.warnings)
+        if valid:
+            self._reviewed_plan = copy.deepcopy(worker.review_plan)
+            self._review_key = worker.review_key
+        self._review_items = copy.deepcopy(summary.items)
+        self.cmb_review_file.addItems([f"{index + 1}. {os.path.basename(item.source_path)}"
+                                      for index, item in enumerate(self._review_items)])
+        self.btn_organize.setText("Organize reviewed moves" if valid and summary.items else "Review moves")
         self._set_organizer_running_ui(False)
         self.active_dir_worker = None
         self.progress_organize.setRange(0, 100)
         self.progress_organize.setValue(100)
         self.lbl_organize_status.setText("Status: Preview Complete (No files modified)")
-        self.lbl_organize_details.setText(f"Found {summary.total_files} file(s) eligible for organization")
-        
-        lines = [
-            "=== DRY-RUN PREVIEW SUMMARY ===",
-            f"Total Files Found: {summary.total_files}",
-            "",
-            "Category Breakdown:"
-        ]
-        if summary.category_counts:
-            for cat, count in sorted(summary.category_counts.items()):
-                lines.append(f"  • {cat}: {count} file(s)")
-        else:
-            lines.append("  (No files match active rules or all files are already organized)")
-            
-        lines.append("")
-        lines.append("Planned Moves (Sample):")
-        target_dir = self.txt_target_dir.text().strip()
-        for item in summary.items[:50]:
-            try:
-                rel_target = os.path.relpath(item.target_path, target_dir)
-            except ValueError:
-                rel_target = item.target_path
-            lines.append(f"  {os.path.basename(item.source_path)} -> {rel_target} [{item.category}]")
-        if len(summary.items) > 50:
-            lines.append(f"  ... and {len(summary.items) - 50} more file(s)")
-            
-        self.txt_organize_summary.setPlainText("\n".join(lines))
+        self.lbl_organize_details.setText(
+            f"{summary.total_files} planned move(s) · {summary.cluster_count} cluster(s) · {len(summary.warnings)} warning(s)"
+            if valid else "Preview displayed. Settings changed or no executable snapshot is available; preview again to organize.")
+        root = worker.review_plan.root_dir if worker is not None and worker.review_plan is not None else self.txt_target_dir.text().strip()
+        self.lbl_results_title.setText("Review proposed moves — no files modified")
+        self.txt_organize_summary.setPlainText(format_directory_review(summary, root))
         self.btn_open_target_folder.setEnabled(True)
         self.btn_open_arrangement_md.setEnabled(False)
 
     def on_dir_worker_finished(self, result: OrganizeResult, report_path: str):
+        reviewed = self._executing_review
+        self._executing_review = None
+        self._invalidate_dir_review()
         self._set_organizer_running_ui(False)
         self.active_dir_worker = None
         self.progress_organize.setRange(0, 100)
@@ -1550,11 +1587,13 @@ WantedBy=default.target
             status_text = "Status: Operation Cancelled by User"
         elif result.error_count > 0:
             status_text = f"Status: Completed with {result.error_count} Error(s)"
+        elif reviewed and reviewed.warnings:
+            status_text = f"Status: Completed with {len(reviewed.warnings)} planning warning(s)"
             
         self.lbl_organize_status.setText(status_text)
         self.lbl_organize_details.setText(
             f"Moved: {result.success_count} | Renamed/Collisions: {result.collision_count} | "
-            f"Duplicates Preserved: {result.duplicate_count} | Skipped: {result.skip_count} | Errors: {result.error_count}"
+            f"Duplicate sources removed: {result.duplicate_count} | Skipped: {result.skip_count} | Errors: {result.error_count}"
         )
         
         lines = [
@@ -1562,7 +1601,7 @@ WantedBy=default.target
             f"Status: {'CANCELLED' if result.cancelled else 'COMPLETED'}",
             f"Verified & Moved: {result.success_count}",
             f"Collisions Resolved (Renamed): {result.collision_count}",
-            f"Duplicates (Source Preserved): {result.duplicate_count}",
+            f"Duplicate sources removed: {result.duplicate_count}",
             f"Skipped: {result.skip_count}",
             f"Errors: {result.error_count}",
             ""
@@ -1576,16 +1615,113 @@ WantedBy=default.target
             self.last_report_path = ""
             self.btn_open_arrangement_md.setEnabled(False)
             
+        for warning in result.warnings:
+            if not reviewed or warning not in reviewed.warnings:
+                lines.append(review_text(warning))
+        if reviewed and reviewed.warnings:
+            lines.append("Planning warnings:")
+            lines.extend(f"  • {review_text(warning)}" for warning in reviewed.warnings)
         if result.records:
-            lines.append("Operation Log (First 100):")
-            for r in result.records[:100]:
+            by_source = {item.source_path: item for item in reviewed.items} if reviewed else {}
+            lines.append("Operation Log:")
+            for r in result.records:
                 err_suffix = f" [ERROR: {r.error}]" if r.error else ""
-                lines.append(f"  [{r.status.value}] {os.path.basename(r.source)} -> {r.category}{err_suffix}")
+                item = by_source.get(r.source)
+                estimate = f" {confidence_tag(item)}" if item else ""
+                lines.append(f"  [{r.status.value}] {review_text(os.path.basename(r.source))} -> {review_text(r.target)}{estimate}{review_text(err_suffix)}")
                 
         self.txt_organize_summary.setPlainText("\n".join(lines))
+        self.lbl_results_title.setText("Execution results")
         self.btn_open_target_folder.setEnabled(True)
 
+        if result.undo:
+            title = status_text[len("Status: "):]
+            if result.undo.entries:
+                self._offer_folder_undo(result.undo, title)
+            else:
+                result.undo.close()
+                QMessageBox.information(self, title, "No completed moves to reverse.")
+
+    def _offer_folder_undo(self, journal, title):
+        button = QPushButton()
+        button.setObjectName("primary")
+        button.setToolTip(journal.root)
+        self.undo_layout.addWidget(button)
+        popup = QMessageBox(self)
+        popup.setWindowTitle(title)
+        popup.setTextFormat(Qt.TextFormat.PlainText)
+        popup.setText(f"{title} · {journal.root}")
+        popup.setInformativeText("You have 10 minutes to return files to their original locations. "
+                                 "You can also reverse this batch from Organize folder.")
+        action = popup.addButton("Reverse moves", QMessageBox.ButtonRole.ActionRole)
+        action.setObjectName("primary")
+        done = popup.addButton("Done", QMessageBox.ButtonRole.AcceptRole)
+        popup.setDefaultButton(done)
+        offer = (journal, button, popup, action)
+        self.undo_offers.append(offer)
+        button.clicked.connect(lambda: self._reverse_folder(offer))
+        action.clicked.connect(lambda: self._reverse_folder(offer))
+        self.undo_timer.start()
+        self._refresh_undo_offers()
+        if offer in self.undo_offers:
+            popup.open()
+
+    def _remove_undo_offer(self, offer):
+        self.undo_offers.remove(offer)
+        journal, button, popup, action = offer
+        button.hide()
+        button.deleteLater()
+        popup.close()
+        popup.deleteLater()
+        if not self.undo_offers:
+            self.undo_timer.stop()
+
+    def _refresh_undo_offers(self):
+        for offer in list(self.undo_offers):
+            journal, button, popup, action = offer
+            remaining = math.ceil(journal.deadline - time.monotonic())
+            if remaining <= 0:
+                self._remove_undo_offer(offer)
+                journal.close()
+                continue
+            button.setText(f"Reverse moves · {os.path.basename(journal.root)} · {remaining//60}:{remaining%60:02}")
+            button.setEnabled(self.active_dir_worker is None)
+            action.setEnabled(self.active_dir_worker is None)
+
+    def _reverse_folder(self, offer):
+        if offer not in self.undo_offers or self.active_dir_worker is not None:
+            return
+        journal = offer[0]
+        if time.monotonic() >= journal.deadline:
+            self._refresh_undo_offers()
+            return
+        self._remove_undo_offer(offer)
+        self._invalidate_dir_review()
+        worker = DirectoryOrganizerWorker(self.dir_organizer, journal.root, mode="reverse")
+        worker.undo = journal
+        self.active_dir_worker = worker
+        self._set_organizer_running_ui(True)
+        self.btn_cancel_organize.setEnabled(False)
+        self.lbl_organize_status.setText("Restoring original files…")
+        self.lbl_organize_details.setText(journal.root)
+        self.progress_organize.setRange(0, 0)
+        worker.signals.reversed.connect(self._folder_reversed)
+        worker.signals.error.connect(self.on_dir_worker_error)
+        self.threadpool.start(worker)
+
+    def _folder_reversed(self, restored, errors):
+        self.active_dir_worker = None
+        self._set_organizer_running_ui(False)
+        self.progress_organize.setRange(0, 100)
+        self.progress_organize.setValue(100)
+        self.lbl_organize_status.setText("Reversal complete")
+        self.lbl_organize_details.setText(f"Restored {restored} · Could not fully restore {len(errors)}")
+        self.lbl_results_title.setText("Reversal results")
+        self.txt_organize_summary.setPlainText("\n".join(map(review_text, errors)) or "All files returned to their original locations.")
+
     def on_dir_worker_error(self, error_msg: str):
+        self._executing_review = None
+        self._invalidate_dir_review()
         self._set_organizer_running_ui(False)
         self.active_dir_worker = None
         self.progress_organize.setRange(0, 100)
@@ -1611,10 +1747,6 @@ WantedBy=default.target
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
         
-        # Header
-        lbl_header = QLabel("Operation History")
-        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(lbl_header)
         
         # Table of logs
         self.table_logs = QTableWidget(0, 5)
@@ -1643,7 +1775,7 @@ WantedBy=default.target
         
         # Table of rules
         self.table_rules = QTableWidget(0, 4)
-        self.table_rules.setHorizontalHeaderLabels(["Name", "Priority", "Enabled", "Destination"])
+        self.table_rules.setHorizontalHeaderLabels(["Name", "Priority", "Status", "Destination"])
         self.table_rules.setAlternatingRowColors(True)
         self.table_rules.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_rules.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -1678,7 +1810,7 @@ WantedBy=default.target
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setFrameShadow(QFrame.Shadow.Sunken)
-        sep1.setStyleSheet("background-color: #333333;" if self.config.get("theme", "system") == "dark" else "background-color: #e1dedb;")
+        sep1.setObjectName("separator")
         btn_layout.addWidget(sep1)
         
         btn_layout.addWidget(self.btn_move_up)
@@ -1687,7 +1819,7 @@ WantedBy=default.target
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setFrameShadow(QFrame.Shadow.Sunken)
-        sep2.setStyleSheet("background-color: #333333;" if self.config.get("theme", "system") == "dark" else "background-color: #e1dedb;")
+        sep2.setObjectName("separator")
         btn_layout.addWidget(sep2)
         
         btn_layout.addWidget(self.btn_enable_rule)
@@ -1734,9 +1866,12 @@ WantedBy=default.target
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         
         container = QWidget()
+        container.setObjectName("scrollContent")
         scroll.setWidget(container)
         
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 16, 26, 24)
+        layout.setSpacing(12)
         
         # 1. Application Startup Group
         group_general = QGroupBox("Application Startup")
@@ -1800,6 +1935,60 @@ WantedBy=default.target
         
         mon_layout.addRow("Large File Threshold:", self.txt_thresh)
         layout.addWidget(group_monitoring)
+
+        group_intelligence = QGroupBox("File intelligence")
+        intelligence_layout = QVBoxLayout(group_intelligence)
+        intelligence_layout.addWidget(QLabel("Sorting mode:"))
+        self.cmb_sorting_mode = QComboBox()
+        self.cmb_sorting_mode.setAccessibleName("Sorting mode")
+        self.cmb_sorting_mode.addItem("Rules first — existing behavior", "rules_first")
+        self.cmb_sorting_mode.addItem("Content intelligence — analyze all files", "intelligence")
+        self.cmb_sorting_mode.setCurrentIndex(max(0, self.cmb_sorting_mode.findData(
+            self.config.get("sorting_mode", "rules_first"))))
+        intelligence_layout.addWidget(self.cmb_sorting_mode)
+        self.chk_downloads_recursive = QCheckBox("Include Downloads subfolders in Content intelligence")
+        self.chk_downloads_recursive.setChecked(self.config.get("downloads_recursive", True))
+        self.chk_downloads_recursive.setToolTip("Watch new files in nested folders. Use Organize folder to preview existing files.")
+        intelligence_layout.addWidget(self.chk_downloads_recursive)
+        self.chk_desktop_folders = QCheckBox("Use Linux default folders when sorting downloads to Home")
+        self.chk_desktop_folders.setChecked(self.config.get("use_desktop_folders", True))
+        self.chk_desktop_folders.setToolTip("Use your existing Pictures, Videos, Music and Documents locations. Explicit custom destination bases are respected.")
+        intelligence_layout.addWidget(self.chk_desktop_folders)
+        from src.utils.desktop_folders import desktop_folders
+        locations = desktop_folders()
+        self.lbl_desktop_folders = QLabel("\n".join(f"{title}: {locations[key]}" for title, key in (
+            ("Pictures", "PICTURES"), ("Videos", "VIDEOS"), ("Music", "MUSIC"), ("Documents", "DOCUMENTS"))))
+        self.lbl_desktop_folders.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_desktop_folders.setWordWrap(True)
+        self.lbl_desktop_folders.setProperty("role", "muted")
+        intelligence_layout.addWidget(self.lbl_desktop_folders)
+        self.cmb_sorting_mode.currentIndexChanged.connect(lambda: self.chk_downloads_recursive.setEnabled(
+            self.cmb_sorting_mode.currentData() == "intelligence"))
+        self.chk_downloads_recursive.setEnabled(self.cmb_sorting_mode.currentData() == "intelligence")
+
+        self.lbl_sorting_mode_help = QLabel()
+        self.lbl_sorting_mode_help.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_sorting_mode_help.setWordWrap(True)
+        self.lbl_sorting_mode_help.setProperty("role", "muted")
+        def show_sorting_mode_help():
+            self.lbl_sorting_mode_help.setText(self._sorting_mode_description(
+                self.cmb_sorting_mode.currentData()) + " Save settings to apply to new downloads and folder previews.")
+        self.cmb_sorting_mode.currentIndexChanged.connect(show_sorting_mode_help)
+        show_sorting_mode_help()
+        intelligence_layout.addWidget(self.lbl_sorting_mode_help)
+        self.chk_origin_detection = QCheckBox("Enable Browser Origin Detection")
+        self.chk_origin_detection.setChecked(self.config.get("enable_origin_detection", True))
+        self.chk_origin_detection.setToolTip("Use local browser history and file origin attributes. No network requests.")
+        self.chk_deep_content = QCheckBox("Enable Deep Document Content Extraction")
+        self.chk_deep_content.setChecked(self.config.get("enable_deep_content_extraction", True))
+        self.chk_deep_content.setToolTip("Read bounded document text and metadata. Off uses filenames and optional origin evidence.")
+        intelligence_layout.addWidget(self.chk_origin_detection)
+        intelligence_layout.addWidget(self.chk_deep_content)
+        intelligence_note = QLabel("Preview a folder to inspect destinations and evidence. In Rules, mark a manual rule to apply it in Content intelligence. Restart a separate background service after changing settings.")
+        intelligence_note.setWordWrap(True)
+        intelligence_note.setProperty("role", "muted")
+        intelligence_layout.addWidget(intelligence_note)
+        layout.addWidget(group_intelligence)
         
         # 3. Notifications Group
         group_notif = QGroupBox("Notifications")
@@ -1866,7 +2055,7 @@ WantedBy=default.target
         group_adv = QGroupBox("Advanced Settings")
         adv_layout = QFormLayout(group_adv)
         
-        self.chk_dup = QCheckBox("Enable Duplicate Detection (SHA256 Hash check)")
+        self.chk_dup = QCheckBox("Remove matching source duplicates (SHA-256 verified)")
         self.chk_dup.setChecked(bool(self.config.get("enable_duplicate_detection", True)))
         adv_layout.addRow(self.chk_dup)
         
@@ -1885,13 +2074,15 @@ WantedBy=default.target
         layout.addWidget(group_adv)
         
         # Save Button
-        btn_save = QPushButton("Save All Settings")
+        btn_save = QPushButton("Save preferences")
+        self.btn_save_settings = btn_save
         btn_save.setObjectName("primary")
         btn_save.clicked.connect(self.save_settings)
         layout.addWidget(btn_save)
         
         # Wrap container in scroll area
         main_settings_layout = QVBoxLayout()
+        main_settings_layout.setContentsMargins(0, 0, 0, 0)
         main_settings_layout.addWidget(scroll)
         self.tab_settings.setLayout(main_settings_layout)
 
@@ -1913,36 +2104,68 @@ WantedBy=default.target
             QMessageBox.critical(self, "Error", f"Invalid Large File Threshold: {str(e)}")
             return
             
+        old_sorting_mode = self.config.get("sorting_mode", "rules_first")
+        old_watch_recursive = old_sorting_mode == "intelligence" and self.config.get("downloads_recursive", True)
+        old_downloads = self.config.get("downloads_folder")
+        new_downloads = os.path.abspath(os.path.expanduser(self.txt_downloads.text()))
+        folder_changed = os.path.normpath(old_downloads) != new_downloads
+        if folder_changed and not os.path.isdir(new_downloads):
+            QMessageBox.critical(self, "Error", "Please choose an existing Downloads folder.")
+            return
+
         try:
-            self.config.set("downloads_folder", self.txt_downloads.text())
-            self.config.set("large_file_threshold_gb", bytes_val)
-            self.config.set("enable_notifications", self.chk_notif.isChecked())
-            self.config.set("enable_duplicate_detection", self.chk_dup.isChecked())
-            self.config.set("conflict_resolution", self.cmb_conflict.currentText())
-            self.config.set("start_minimized", self.chk_start_minimized.isChecked())
-            self.config.set("smart_filename_cleanup", self.chk_smart_cleanup.isChecked())
-            # Update the organizer's cleanup instance to reflect the new setting
-            self.organizer.filename_cleanup.enabled = self.chk_smart_cleanup.isChecked()
-            
             prev_autostart = self.config.get("autostart", False)
             new_autostart = self.chk_autostart.isChecked()
-            self.config.set("autostart", new_autostart)
-            
+            settings = dict(self.config.config)
+            settings.update({
+                "downloads_folder": new_downloads,
+                "large_file_threshold_gb": bytes_val,
+                "enable_notifications": self.chk_notif.isChecked(),
+                "enable_duplicate_detection": self.chk_dup.isChecked(),
+                "conflict_resolution": self.cmb_conflict.currentText(),
+                "start_minimized": self.chk_start_minimized.isChecked(),
+                "smart_filename_cleanup": self.chk_smart_cleanup.isChecked(),
+                "autostart": new_autostart,
+                "theme": ("system", "dark", "light")[self.cmb_theme.currentIndex()],
+                "enable_origin_detection": self.chk_origin_detection.isChecked(),
+                "enable_deep_content_extraction": self.chk_deep_content.isChecked(),
+                "sorting_mode": self.cmb_sorting_mode.currentData(),
+                "downloads_recursive": self.chk_downloads_recursive.isChecked(),
+                "use_desktop_folders": self.chk_desktop_folders.isChecked(),
+            })
+            # One validated write avoids repeatedly rewriting the configuration.
+            self.config.save_config(settings)
+            self._invalidate_dir_review()
+            blocked = self.chk_recursive.blockSignals(True)
+            self.chk_recursive.setChecked(self._folder_recursion_enabled())
+            self.chk_recursive.blockSignals(blocked)
+            self._refresh_sorting_mode_summary()
+            self.organizer.filename_cleanup.enabled = self.chk_smart_cleanup.isChecked()
             if prev_autostart != new_autostart:
                 self.update_autostart_setting(new_autostart)
-                
-            theme_map = {"System Theme": "system", "Dark Mode": "dark", "Light Mode": "light"}
-            theme_val = theme_map.get(self.cmb_theme.currentText(), "system")
-            self.config.set("theme", theme_val)
-            
-            # Apply theme immediately
             self.apply_theme()
-            
-            QMessageBox.information(self, "Success", "All settings saved successfully!")
+
+            new_watch_recursive = self.config.get("sorting_mode", "rules_first") == "intelligence" and self.config.get("downloads_recursive", True)
+            if (folder_changed or old_watch_recursive != new_watch_recursive) and (hasattr(self, "monitor_thread") or
+                                   "PYTEST_CURRENT_TEST" not in os.environ):
+                if hasattr(self, "monitor_thread"):
+                    self.monitor_thread.stop()
+                    if not self.monitor_thread.wait(2000):
+                        QMessageBox.warning(self, "Settings saved",
+                                            "The previous monitor is still stopping. Restart SmartSort to apply the monitoring changes.")
+                        return
+                self.start_monitor()
+            message = "All settings saved successfully!"
+            if old_sorting_mode != self.config.get("sorting_mode", "rules_first"):
+                message += ("\n\nThe new sorting mode applies to new downloads and folder previews. "
+                            "If the separate Background Monitoring service is running, use its Restart button to reload settings.")
+            QMessageBox.information(self, "Success", message)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
 
     def refresh_rules_table(self):
+        self._refresh_sorting_mode_summary()
+        self._invalidate_dir_review()
         self.table_rules.setRowCount(0)
         rules = self.organizer.rule_manager.rules
         for r in rules:
@@ -1956,7 +2179,7 @@ WantedBy=default.target
             priority_item = QTableWidgetItem(priority_badge)
             priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             
-            enabled_indicator = "🟢" if r.enabled else "🔴"
+            enabled_indicator = "Enabled" if r.enabled else "Disabled"
             enabled_item = QTableWidgetItem(enabled_indicator)
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             
@@ -1967,7 +2190,9 @@ WantedBy=default.target
             self.table_rules.setItem(row, 2, enabled_item)
             self.table_rules.setItem(row, 3, dest_item)
             
-        self.table_rules.resizeColumnsToContents()
+        self.table_rules.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table_rules.setColumnWidth(1, 76)
+        self.table_rules.setColumnWidth(2, 92)
         self.table_rules.horizontalHeader().setStretchLastSection(True)
 
     def get_selected_rule_id(self) -> str:
@@ -2096,96 +2321,206 @@ WantedBy=default.target
                 QMessageBox.critical(self, "Error", f"Failed to delete rule: {str(e)}")
 
     def setup_tester(self):
+        self._tester_worker = None
+        self._tester_request_id = 0
+        self._tester_result_key = None
         layout = QVBoxLayout()
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
-        
-        # Header
-        lbl_header = QLabel("Rule Matching Tester")
-        lbl_header.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(lbl_header)
-        
-        # Input Form
+        layout.addWidget(self._sorting_mode_card())
+        note = QLabel("Test a filename, or choose an existing file to analyze its content. Nothing is moved or removed.")
+        note.setWordWrap(True)
+        note.setProperty("role", "muted")
+        layout.addWidget(note)
         form_widget = QWidget()
         form_widget.setProperty("class", "Card")
         form = QFormLayout(form_widget)
         form.setSpacing(10)
-        
+        self.cmb_test_source = QComboBox()
+        self.cmb_test_source.addItem("Filename and size", "filename")
+        self.cmb_test_source.addItem("Existing file — content analysis", "file")
+        self.cmb_test_source.setAccessibleName("Test input")
+        form.addRow("Test input:", self.cmb_test_source)
+        file_row = QHBoxLayout()
+        self.txt_test_path = QLineEdit()
+        self.txt_test_path.setPlaceholderText("Choose a file to preview its actual sorting destination")
+        self.btn_browse_test_file = QPushButton("Browse…")
+        self.btn_browse_test_file.clicked.connect(self.browse_test_file)
+        file_row.addWidget(self.txt_test_path, 1)
+        file_row.addWidget(self.btn_browse_test_file)
+        form.addRow("Existing file:", file_row)
         self.txt_test_filename = QLineEdit("wallpaper.jpg")
         self.txt_test_size = QLineEdit("1.2MB")
         self.txt_test_size.setPlaceholderText("e.g. 1.2MB, 500KB, 2.5GB")
-        
         self.txt_test_ext = QLineEdit(".jpg")
-        self.txt_test_ext.setPlaceholderText("e.g. .jpg, .png (optional)")
-        
+        self.txt_test_ext.setPlaceholderText("Used only when the filename has no extension")
         form.addRow("Filename:", self.txt_test_filename)
-        form.addRow("File Size:", self.txt_test_size)
+        form.addRow("File size:", self.txt_test_size)
         form.addRow("Extension:", self.txt_test_ext)
         layout.addWidget(form_widget)
-        
-        btn_test = QPushButton("Test Rule Matching")
-        btn_test.setObjectName("primary")
-        btn_test.clicked.connect(self.run_rule_test)
-        layout.addWidget(btn_test)
-        
-        group = QGroupBox("Test Results Output")
-        g_layout = QFormLayout()
+        self.btn_test_sorting = QPushButton("Test sorting")
+        self.btn_test_sorting.setObjectName("primary")
+        self.btn_test_sorting.clicked.connect(self.run_rule_test)
+        layout.addWidget(self.btn_test_sorting)
+        group = QGroupBox("Sorting preview")
+        g_layout = QFormLayout(group)
         g_layout.setSpacing(10)
-        
-        self.lbl_test_match = QLabel("None")
-        self.lbl_test_match.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.lbl_test_match = QLabel("Not tested")
         self.lbl_test_priority = QLabel("N/A")
-        self.lbl_test_priority.setStyleSheet("font-weight: bold;")
         self.lbl_test_dest = QLabel("N/A")
-        self.lbl_test_dest.setStyleSheet("font-weight: bold;")
-        
-        g_layout.addRow("Matched Rule:", self.lbl_test_match)
-        g_layout.addRow("Priority:", self.lbl_test_priority)
+        self.lbl_test_confidence = QLabel("N/A")
+        self.lbl_test_scope = QLabel("")
+        for label in (self.lbl_test_match, self.lbl_test_priority, self.lbl_test_dest,
+                      self.lbl_test_confidence, self.lbl_test_scope):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_test_confidence.setToolTip("Classification strength, not a probability. File-type fallback has unknown semantic confidence.")
+        g_layout.addRow("Decision:", self.lbl_test_match)
+        g_layout.addRow("Rule priority:", self.lbl_test_priority)
         g_layout.addRow("Destination:", self.lbl_test_dest)
-        
-        group.setLayout(g_layout)
+        g_layout.addRow("Confidence:", self.lbl_test_confidence)
+        g_layout.addRow("Analysis:", self.lbl_test_scope)
+        self.txt_test_evidence = QPlainTextEdit()
+        self.txt_test_evidence.setReadOnly(True)
+        self.txt_test_evidence.setAccessibleName("Sorting evidence")
+        self.txt_test_evidence.setMinimumHeight(100)
+        self.txt_test_evidence.setMaximumHeight(180)
+        g_layout.addRow("Reasons:", self.txt_test_evidence)
         layout.addWidget(group)
         layout.addStretch()
-        
-        self.tab_tester.setLayout(layout)
+        content = QWidget()
+        content.setLayout(layout)
+        self.scroll_page(self.tab_tester, content)
+        for control in (self.txt_test_filename, self.txt_test_size, self.txt_test_ext, self.txt_test_path):
+            control.textChanged.connect(self._invalidate_tester_result)
+        self.cmb_test_source.currentIndexChanged.connect(self._test_source_changed)
+        self._test_source_changed()
+
+    def _test_source_changed(self):
+        real_file = self.cmb_test_source.currentData() == "file"
+        self.txt_test_path.setEnabled(real_file)
+        self.btn_browse_test_file.setEnabled(real_file)
+        for control in (self.txt_test_filename, self.txt_test_size, self.txt_test_ext):
+            control.setEnabled(not real_file)
+        self._invalidate_tester_result()
+
+    def browse_test_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose file to test")
+        if path:
+            self.txt_test_path.setText(path)
+
+    def _tester_key(self):
+        from src.utils.desktop_folders import DesktopDestinations
+        routes = DesktopDestinations(os.path.expanduser(self.config.get("destination_base", "~")), self.config)
+        return (self.cmb_test_source.currentData(), self.txt_test_path.text().strip(),
+                self.txt_test_filename.text().strip(), self.txt_test_size.text().strip(),
+                self.txt_test_ext.text().strip(),
+                json.dumps({name: self.config.get(name) for name in (
+                    "sorting_mode", "destination_base", "downloads_folder", "smart_filename_cleanup",
+                    "filename_min_length", "filename_max_length", "enable_origin_detection",
+                    "enable_deep_content_extraction", "use_desktop_folders")}, sort_keys=True),
+                json.dumps([rule.to_dict() for rule in self.organizer.rule_manager.rules], sort_keys=True),
+                routes.signature)
+
+    def _invalidate_tester_result(self):
+        if not hasattr(self, "lbl_test_match"):
+            return
+        self._tester_request_id += 1
+        self._tester_result_key = None
+        self.lbl_test_match.setText("Test again to preview the current inputs")
+        self.lbl_test_priority.setText("N/A")
+        self.lbl_test_dest.setText("N/A")
+        self.lbl_test_confidence.setText("N/A")
+        self.lbl_test_scope.setText("")
+        self.txt_test_evidence.clear()
+
+    def _show_sorting_test(self, result, key):
+        proposal = result.proposal
+        self._tester_result_key = key
+        self.lbl_test_match.setText(proposal.rule_name if proposal.is_rule_override else
+                                    "Content intelligence: " + proposal.domain)
+        self.set_label_tone(self.lbl_test_match, "success" if proposal.is_rule_override else "info")
+        self.lbl_test_priority.setText(f"P{result.rule_priority}" if result.rule_priority is not None else "N/A")
+        self.lbl_test_dest.setText(proposal.target_path)
+        if proposal.confidence_level.value == "UNKNOWN" and proposal.domain != "Others":
+            self.lbl_test_confidence.setText("File type recognized; content confidence UNKNOWN")
+        else:
+            self.lbl_test_confidence.setText(f"{proposal.confidence_level.value} ({proposal.confidence_score:.0%})")
+        self.lbl_test_scope.setText("Existing file: saved sorting settings; no files moved or removed."
+            if result.source_kind == "file" else "Filename/size/type preview only; file content was not inspected.")
+        reasons = [item.description for item in proposal.evidence[:64]]
+        if len(proposal.evidence) > 64:
+            reasons.append(f"{len(proposal.evidence) - 64} additional reasons omitted.")
+        self.txt_test_evidence.setPlainText("\n".join(reasons) or "No additional evidence.")
 
     def run_rule_test(self):
-        filename = self.txt_test_filename.text().strip()
-        size_str = self.txt_test_size.text().strip()
-        ext = self.txt_test_ext.text().strip()
-        
-        if not filename:
-            QMessageBox.critical(self, "Error", "Filename cannot be empty")
+        if self._tester_worker is not None:
             return
-            
-        file_size = 0
-        if size_str:
-            try:
-                from src.rules.conditions import parse_size_to_bytes
-                file_size = parse_size_to_bytes(size_str)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Invalid size format: {str(e)}")
+        self._invalidate_tester_result()
+        key = self._tester_key()
+        settings = copy.deepcopy(self.config.config)
+        rules = copy.deepcopy(self.organizer.rule_manager.rules)
+        if self.cmb_test_source.currentData() == "file":
+            path = self.txt_test_path.text().strip()
+            if not path:
+                QMessageBox.warning(self, "Choose a file", "Select an existing file to analyze.")
                 return
-                
-        if ext and not filename.lower().endswith(ext.lower()):
-            eval_path = filename + (ext if ext.startswith(".") else "." + ext)
+            worker = SortingTestWorker(self._tester_request_id, key, settings, rules, os.path.expanduser(path))
+            self._tester_worker = worker
+            worker.signals.finished.connect(self._sorting_test_finished)
+            worker.signals.error.connect(self._sorting_test_error)
+            self.btn_test_sorting.setEnabled(False)
+            self.btn_test_sorting.setText("Analyzing…")
+            self.lbl_test_match.setText("Analyzing existing file…")
+            self.threadpool.start(worker)
+            return
+        filename = self.txt_test_filename.text().strip()
+        size = self.txt_test_size.text().strip()
+        extension = self.txt_test_ext.text().strip()
+        try:
+            from src.rules.conditions import parse_size_to_bytes
+            from src.core.sorting_tester import preview_sorting
+            if not filename:
+                raise ValueError("Filename cannot be empty")
+            if extension and not os.path.splitext(filename)[1]:
+                filename += extension if extension.startswith(".") else "." + extension
+            result = preview_sorting(settings, rules, filename=filename,
+                                     size_bytes=parse_size_to_bytes(size) if size else 0)
+            self._show_sorting_test(result, key)
+        except Exception as error:
+            QMessageBox.critical(self, "Test failed", str(error))
+
+    def _finish_test_worker(self, request_id):
+        worker = self._tester_worker
+        if worker is None or worker.request_id != request_id:
+            return False
+        self._tester_worker = None
+        self.btn_test_sorting.setEnabled(True)
+        self.btn_test_sorting.setText("Test sorting")
+        return True
+
+    def _sorting_test_finished(self, event):
+        request_id, key, result = event
+        if not self._finish_test_worker(request_id):
+            return
+        if request_id == self._tester_request_id and key == self._tester_key():
+            self._show_sorting_test(result, key)
         else:
-            eval_path = filename
-            
-        from src.rules.engine import RuleEngine
-        engine = RuleEngine(self.organizer.rule_manager.rules)
-        rule, dest = engine.evaluate_file(eval_path, file_size)
-        
-        if rule:
-            self.lbl_test_match.setText(f"<span style='color: #2ec27e; font-weight: bold;'>{rule.name}</span>")
-            self.lbl_test_priority.setText(f"<span style='background-color: #3584e4; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>P{rule.priority}</span>")
+            self._invalidate_tester_result()
+
+    def _sorting_test_error(self, event):
+        request_id, key, error = event
+        if not self._finish_test_worker(request_id):
+            return
+        if request_id == self._tester_request_id and key == self._tester_key():
+            self.lbl_test_match.setText("Unable to analyze this file")
+            self.txt_test_evidence.setPlainText(error)
         else:
-            self.lbl_test_match.setText("<span style='color: #f5c211; font-weight: bold;'>None (Fallback Rule)</span>")
-            self.lbl_test_priority.setText("<span style='color: #888888;'>N/A</span>")
-            
-        self.lbl_test_dest.setText(f"<code>{dest}</code>")
+            self._invalidate_tester_result()
 
     def refresh_logs(self):
+        self.table_logs.setRowCount(0)
         log_dir = self.logger.log_dir
         if not os.path.exists(log_dir):
             return
@@ -2198,13 +2533,13 @@ WantedBy=default.target
         log_path = os.path.join(log_dir, log_files[0])
         
         try:
-            with open(log_path, 'r') as f:
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
             
             self.table_logs.setRowCount(0)
             for line in lines:
                 if " - INFO - File: " in line:
-                    parts = line.split(" - INFO - ")
+                    parts = line.split(" - INFO - ", 1)
                     timestamp = parts[0]
                     content = parts[1]
                     
@@ -2246,7 +2581,7 @@ WantedBy=default.target
                 self.monitor_thread.get_handler().mark_as_unprocessed(file_path)
             return
         # This is called from the monitor thread (via signal)
-        self.log_display.append(f"Detected: {os.path.basename(file_path)}")
+        self.log_display.appendPlainText(f"Detected: {os.path.basename(file_path)}")
         if self.tray_available:
             try:
                 size_bytes = os.path.getsize(file_path)
@@ -2273,7 +2608,7 @@ WantedBy=default.target
             self.ask_approval(file_path, info)
         elif result == "SUCCESS":
             self.update_stats("processed")
-            self.log_display.append(f"Moved {filename} to: {info}")
+            self.log_display.appendPlainText(f"Moved {filename} to: {info}")
             if self.config.get("enable_notifications"):
                 self.show_notification("File Organized", f"{filename} moved to {info}")
             self.refresh_logs()
@@ -2281,17 +2616,16 @@ WantedBy=default.target
                 self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "DUPLICATE":
             self.update_stats("duplicates")
-            self.log_display.append(f"Duplicate found for {filename} at: {info}")
-            QMessageBox.information(self, "Duplicate Detected", f"A matching file already exists:\n{info}")
+            self.log_display.appendPlainText(f"Removed duplicate source {filename}; SHA-256 matched existing file: {info}")
             if self.tray_available:
                 self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "SKIPPED":
-            self.log_display.append(f"Skipped: {filename} ({info})")
+            self.log_display.appendPlainText(f"Skipped: {filename} ({info})")
             if self.tray_available:
                 self.tray_manager.set_success(self.stats.get("processed", 0), active_rules)
         elif result == "ERROR":
             self.update_stats("errors")
-            self.log_display.append(f"Error processing {filename}: {info}")
+            self.log_display.appendPlainText(f"Error processing {filename}: {info}")
             if self.config.get("enable_notifications"):
                 self.show_notification("SmartSort Error", f"Failed to organize {filename}: {info}")
             if hasattr(self, 'monitor_thread'):
@@ -2300,7 +2634,7 @@ WantedBy=default.target
                 self.tray_manager.set_error(info)
 
     def on_worker_error(self, file_path, error_msg):
-        self.log_display.append(f"Critical error processing {os.path.basename(file_path)}: {error_msg}")
+        self.log_display.appendPlainText(f"Critical error processing {os.path.basename(file_path)}: {error_msg}")
         if self.config.get("enable_notifications"):
             self.show_notification("SmartSort Critical Error", f"Error organizing {os.path.basename(file_path)}: {error_msg}")
         if hasattr(self, 'monitor_thread'):
@@ -2332,21 +2666,11 @@ WantedBy=default.target
                     self.tray_manager.tray_icon.showMessage(title, message)
             except Exception:
                 pass
-        else:
-            try:
-                import notify2
-                n = notify2.Notification(title, message)
-                n.show()
-            except:
-                try:
-                    if hasattr(self, "tray_manager") and self.tray_manager and self.tray_manager.tray_icon:
-                        self.tray_manager.tray_icon.showMessage(title, message)
-                except Exception:
-                    pass
 
 class RuleDialog(QDialog):
     def __init__(self, parent=None, rule=None, existing_priorities=None):
         super().__init__(parent)
+        self.resize(660, 550)
         self.rule = rule
         self.existing_priorities = existing_priorities or set()
         if self.rule:
@@ -2374,15 +2698,21 @@ class RuleDialog(QDialog):
             
         self.chk_enabled = QCheckBox()
         self.chk_enabled.setChecked(True)
-        
+        self.chk_intelligence_rule = QCheckBox("Use this rule in Content intelligence")
+        self.chk_intelligence_rule.setChecked(True)
+        self.chk_intelligence_rule.setToolTip("Your explicit choice takes priority over automatic content hints. Project folders remain protected.")
+
         self.txt_dest = QLineEdit()
         self.txt_dest.textChanged.connect(self.update_preview)
         
         self.lbl_preview = QLabel("Preview: (Enter a destination template)")
+        self.lbl_preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_preview.setWordWrap(True)
         
         form.addRow("Rule Name:", self.txt_name)
         form.addRow("Priority:", self.spin_priority)
         form.addRow("Enabled:", self.chk_enabled)
+        form.addRow("Manual override:", self.chk_intelligence_rule)
         form.addRow("Destination Template:", self.txt_dest)
         form.addRow("Destination Preview:", self.lbl_preview)
         
@@ -2458,6 +2788,7 @@ class RuleDialog(QDialog):
         self.txt_name.setText(self.rule.name)
         self.spin_priority.setValue(self.rule.priority)
         self.chk_enabled.setChecked(self.rule.enabled)
+        self.chk_intelligence_rule.setChecked(self.rule.apply_in_intelligence)
         self.txt_dest.setText(self.rule.destination)
         
         from src.rules.conditions import ExtensionCondition, FilenameContainsCondition, SizeCondition, RegexCondition
@@ -2547,6 +2878,7 @@ class RuleDialog(QDialog):
             "id": self.rule.id if self.rule else str(uuid.uuid4()),
             "name": name,
             "enabled": self.chk_enabled.isChecked(),
+            "apply_in_intelligence": self.chk_intelligence_rule.isChecked(),
             "priority": priority,
             "conditions": conditions,
             "destination": destination

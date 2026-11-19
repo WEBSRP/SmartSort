@@ -98,13 +98,13 @@ class TestSignalType:
             "FILENAME_TOKEN", "DOCUMENT_TITLE", "DOCUMENT_HEADING",
             "CONTENT_KEYWORD", "ORIGIN_DOMAIN", "ARCHIVE_CONTENT",
             "CODE_SYNTAX", "MEDIA_METADATA", "EXIF_CAMERA",
-            "DIRECTORY_CONTEXT", "CLUSTER_CONTEXT",
+            "DIRECTORY_CONTEXT", "CLUSTER_CONTEXT", "EXTENSION_HINT",
         }
         actual = {member.value for member in SignalType}
         assert actual == expected
 
     def test_member_count(self):
-        assert len(SignalType) == 11
+        assert len(SignalType) == 12
 
     def test_construction_from_value(self):
         assert SignalType("FILENAME_TOKEN") is SignalType.FILENAME_TOKEN

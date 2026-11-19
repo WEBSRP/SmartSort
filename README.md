@@ -26,7 +26,7 @@ Organize your Downloads folder automatically — fast, lightweight and built nat
 
 <p align="center">
 
-Automatically monitors your Downloads folder, intelligently categorizes files and keeps your system organized in real time.
+SmartSort uses filenames, file contents and your rules to organize downloads locally. It works offline without an AI model.
 
 </p>
 
@@ -36,15 +36,15 @@ Automatically monitors your Downloads folder, intelligently categorizes files an
 
 # ✨ Features
 
-- 📂 Real-time Downloads folder monitoring
-- 📄 Automatic file categorization
-- ⚙️ Custom user-defined sorting rules
-- 📦 Duplicate detection
+- 📂 Real-time Downloads monitoring with optional subfolder scanning
+- 📄 Local sorting by file type and purpose
+- ⚙️ Custom sorting rules with a preview in Rule Tester
+- 📦 SHA-256 verification before removing a duplicate source copy
 - 🔔 Desktop notifications
 - 🖥️ System tray integration
-- 🎨 Modern PyQt6 interface
+- 🎨 Light and dark PyQt6 themes
 - 🚀 Lightweight background service
-- 🐧 Native Debian package
+- 🐧 Native Debian package with a single-instance dashboard
 - 🔓 Fully Open Source
 
 ---
@@ -53,7 +53,7 @@ Automatically monitors your Downloads folder, intelligently categorizes files an
 
 SmartSort continuously watches your Downloads folder.
 
-Whenever a new file appears, it is analysed and automatically moved to its appropriate destination.
+With desktop defaults enabled, a download such as `forest_wallpaper.jpg` can go to Pictures/Wallpapers. A generic photo goes to Pictures when there are no clues about its purpose.
 
 ```
 Downloads
@@ -74,7 +74,7 @@ Downloads
         │
      Analyses
         │
-   Applies Rules
+   Chooses folder
         │
      Organizes
 
@@ -85,7 +85,7 @@ Downloads
 🖼 Pictures
 📦 Archives
 🎵 Music
-⚙ Packages
+⚙ Applications
 ```
 
 No manual sorting.
@@ -106,7 +106,7 @@ Just download and continue working.
 | 📦 Archives | ZIP, RAR, 7Z, TAR |
 | 💻 Executables | DEB, AppImage, BIN |
 | 💾 Disk Images | ISO |
-| 📁 Others | Custom Rules |
+| 📁 Others | Files with no recognized category |
 
 ---
 
@@ -158,27 +158,31 @@ Notifications reuse the existing **Enable Desktop Notifications** setting in Set
 
 # 🗂 Directory Organizer
 
-Organize any folder on demand directly from the SmartSort Dashboard.
+Open **Organize folder**, choose a folder and review the proposed destinations. All moves in this batch stay inside the selected folder.
 
-- **Selective or Recursive Scanning**: Organize only root files or process entire directory trees.
-- **Dry-Run Preview**: Inspect planned moves and category distributions before modifying any files.
-- **6-Stage Copy-Verify-Delete Safety**: Cryptographic SHA-256 integrity verification guarantees zero data loss.
-- **Content Duplicate Preservation**: Duplicates with matching hashes are safely preserved untouched without overwriting destinations.
-- **Searchable Markdown Index**: Automatically generates `SmartSort_Arrangement.md` with offline clickable `file:///` links.
+- **Scan subfolders.** Content intelligence includes subfolders by default. Recognized projects and app bundles stay together. Put an empty `.smartsort-ignore` file inside a custom folder to protect it.
+- **Review moves.** Inspect the proposed paths, confidence and reasons before running the batch.
+- **Verify transfers.** SmartSort checks the copied file’s SHA-256 before removing the source. With duplicate detection enabled, a verified match removes the incoming copy and keeps the existing destination.
+- **Reverse moves.** Choose **Reverse moves** in the completion popup or on the folder page within **10 minutes**, while SmartSort is open. It restores files to their original paths, including removed duplicate copies, and reports conflicts if files have changed.
+- **Open the arrangement report.** Enable the optional Markdown index to get local file links in `SmartSort_Arrangement.md`.
 
 ---
 
 # 📦 Installation
 
-Download the latest Debian package from the **Releases** page.
+From the directory containing the SmartSort 1.2.12 Debian package, run the following command.
 
 ```bash
-sudo dpkg -i smartsort_1.1.6_all.deb
-
-sudo apt-get install -f
+sudo apt install ./smartsort_1.2.12_all.deb
 ```
 
 Launch **SmartSort** from your Applications menu.
+
+To use content/context-based sorting, open **Settings → File intelligence**,
+select **Content intelligence — analyze all files**, and **Save settings**.
+For a manual override, select **Use this rule in Content intelligence** in the rule editor.
+**Rules first** applies your enabled rules in priority order. Dashboard and Organize folder show the active mode.
+Restart a separately running background service after saving its settings.
 
 ---
 
@@ -216,18 +220,17 @@ python main.py
 
 # 🧪 Testing
 
-Run the complete test suite
+Run the complete test suite using Qt’s offscreen backend
 
 ```bash
-pytest
+QT_QPA_PLATFORM=offscreen python3 -m pytest
 ```
 
-Current Status
+Local verification for 1.2.12
 
-- ✅ All tests passing
-- ✅ GitHub Actions verified
-- ✅ Debian package builds successfully
-- ✅ Fresh installation verified
+- ✅ 1,735 tests passed and one was skipped
+- ✅ Debian package built and its contents checked
+- ✅ Folder organization and reversal tested from the extracted package
 
 ---
 
@@ -262,13 +265,13 @@ File Created
 
       ▼
 
-Detect Extension
+Inspect File
 
       │
 
       ▼
 
-Check User Rules
+Check Sorting Mode
 
       │
 
@@ -321,7 +324,7 @@ SmartSort keeps everything exactly where it belongs.
 - ✅ Debian packaging
 - ✅ GitHub Actions CI
 - ✅ Modern PyQt6 UI
-- 🔄 AI-assisted file classification
+- ✅ Offline, rule-based purpose detection
 - 🔄 Rule marketplace
 - 🔄 Plugin support
 
@@ -344,7 +347,7 @@ Bug reports and feature requests are appreciated.
 
 # 📜 License
 
-This project is licensed under the MIT License.
+This project is licensed under the GNU General Public License v3.0.
 
 See the LICENSE file for details.
 
@@ -357,3 +360,29 @@ See the LICENSE file for details.
 Made with ❤️ using Python & PyQt6
 
 </div>
+
+In **Content intelligence** mode, **Organize folder** includes subfolders by
+default, and the Downloads watcher also watches new files in nested folders.
+Use **Preview → Review moves** to sort an existing folder tree. Turn off
+**Include subfolders** for a top-level folder preview, or disable the separate
+Downloads subfolder option in Settings.
+
+
+Recursive sorting keeps recognizable app bundles and project folders intact.
+For any custom folder that should remain together, add an empty
+`.smartsort-ignore` file inside it before sorting.
+
+**Rule Tester** now uses the saved sorting mode, including Content intelligence.
+Choose **Existing file — content analysis** to preview a real file's destination,
+confidence and reasons without moving it. Filename/size tests show available
+filename/type evidence. For example, `leetcode_two_sum.png` can route to
+`Pictures/Coding_Challenges` from its name. SmartSort does not interpret image pixels.
+See [Rule Tester](docs/rule-tester.md).
+
+Loose code is grouped by language, such as `Code/Shell` and `Code/Python`;
+real-file intelligence can refine it to `Projects/Source/<language>`. Recognized
+project folders stay intact, including when an internal subfolder is selected.
+
+Home-based download sorting reuses the Linux desktop's existing Pictures, Videos,
+Music and Documents folders. Academic, work and code categories live under
+Documents. See [desktop destination folders](docs/desktop-folders.md).

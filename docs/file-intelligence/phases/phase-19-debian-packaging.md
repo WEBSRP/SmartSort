@@ -62,9 +62,9 @@ Description: Intelligent Download Organizer and File Intelligence Platform for L
 - Assert package contains `/usr/share/smartsort/src/core/file_intelligence/`.
 
 ## Acceptance Criteria
-- [ ] `packaging/debian/DEBIAN/control` updated with correct dependencies.
-- [ ] `build_deb.sh` produces verified `.deb` artifact.
-- [ ] Package includes complete `src/core/file_intelligence/` codebase.
+- [x] `packaging/debian/DEBIAN/control` updated with correct dependencies.
+- [x] `build_deb.sh` produces verified `.deb` artifact.
+- [x] Package includes complete `src/core/file_intelligence/` codebase.
 
 ## Dependencies
 - `dpkg-deb`, `binutils`.
@@ -73,5 +73,64 @@ Description: Intelligent Download Organizer and File Intelligence Platform for L
 - Must NOT restore non-Debian packaging (AppImage, Flatpak, RPM).
 
 ## Completion Checklist
-- [ ] Control file updated.
-- [ ] Debian package built and verified.
+- [x] Control file updated.
+- [x] Debian package built and verified.
+
+
+## Implementation and package verification — 2026-11-18
+
+Completed after repairing the two Phase 18 cache blockers and obtaining three
+consecutive full-suite results of **1,445 passed, 1 skipped**, actual exit code 0
+and no expected failures. See the Phase 18 follow-up report.
+
+The control file now requires `python3-pypdf`, `python3-pil` and `python3-mutagen`
+and suggests `python3-docx`/`python3-openpyxl`. The description covers file
+intelligence. Native bounded XML Office readers remain available without the
+suggested SDKs. Local Debian 13 apt metadata supplies every added dependency.
+The prior broad compatibility claims were replaced with explicit dependency
+availability requirements in `docs/packaging.md`.
+
+The existing build script already copies the full source tree, excludes bytecode,
+sets root ownership and 0755 maintainer scripts, and only installs app-owned icons
+in the shared system hicolor directories. No build-script change was needed in
+this phase. App-private assets may contain a theme descriptor; the package does
+not claim the system `/usr/share/icons/hicolor/index.theme` or its cache.
+
+Artifact: `build/deb/smartsort_1.1.6+intelligence.20261118.1_all.deb`.
+The preview suffix distinguishes this local feature build from the installed GUI
+preview. `src/version.py` and the control template retain base version 1.1.6;
+`SMARTSORT_PACKAGE_VERSION` supplies the generated package version. The phase's
+illustrative 1.2.0 release version is not claimed before Phase 20 certification.
+
+Validation:
+
+- Build exit code **0**, artifact **13,666,144 bytes**. Build time **5.229 s**;
+  the five-second target was narrowly missed on this machine.
+- Extended the real package regression test: **1 passed** in 5.12 s. It checks
+  every intelligence Python source byte-for-byte, dependencies, root ownership,
+  script permissions, icons and exclusion of bytecode.
+- Inspected generated control/data archives; all intelligence modules (including
+  `cache.py` and `privacy.py`) match the workspace. Maintainer scripts and wrapper
+  have 0755 mode, and archive ownership is root:root.
+- Extracted to a private temporary directory and used **`/usr/bin/python3`** to
+  import the packaged GUI and required backends, perform identical cold/warm
+  preview on the former cache regression fixture, then verify transfer/report.
+  Imported code paths were checked to come from the extracted artifact.
+- `desktop-file-validate` and shell syntax checks pass. Maintainer scripts were
+  syntax-checked, not executed. No package was installed or user service started.
+- `apt-get --simulate install <artifact>` succeeds: proposes upgrading the existing
+  GUI preview and adding `python3-pypdf`, with no removals. This is local dependency
+  resolution, not an actual installation test or a clean-distribution matrix.
+- SHA-256: `1f4ccc354794932c0534c0ca66602c9924b1715472649785157498226a57a6ba`.
+  A `.deb.sha256` sidecar is written beside the artifact.
+- Validation records live locally under `build/validation/phase19/`.
+
+Phase 20 — Headless CI Validation & Release Certification — remains next.
+Earlier extractor/report latency limitations remain documented; this package is a
+verified local preview rather than a certified release.
+
+
+Phase 20 subsequently rebuilt the same local preview version. The current artifact
+is **13,665,952 bytes**, SHA-256
+`fdb02245eca3494fa5c96cc9173cb71047182660b4aba30296dfd384d469bdb2`; the earlier Phase 19 hash above identifies its original build.
+See the final implementation report for the current artifact and validation record.

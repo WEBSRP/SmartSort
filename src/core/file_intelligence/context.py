@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,7 @@ class SignalType(Enum):
     EXIF_CAMERA = "EXIF_CAMERA"
     DIRECTORY_CONTEXT = "DIRECTORY_CONTEXT"
     CLUSTER_CONTEXT = "CLUSTER_CONTEXT"
+    EXTENSION_HINT = "EXTENSION_HINT"
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +213,190 @@ class ExtractedMetadata:
 
 
 # ---------------------------------------------------------------------------
+# Signals
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Signal:
+    """A normalized token with its evidence channel, base weight and field."""
+
+    token: str
+    signal_type: SignalType
+    weight: float
+    source: str
+
+    def __post_init__(self):
+        if not isinstance(self.token, str) or not self.token.strip():
+            raise ValueError("Signal token must be a non-empty string")
+        if not isinstance(self.signal_type, SignalType):
+            raise ValueError("Signal type must be a SignalType")
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise ValueError("Signal source must be a non-empty field name")
+        if (isinstance(self.weight, bool) or not isinstance(self.weight, (int, float)) or
+                not 0 <= self.weight <= 1):
+            raise ValueError("Signal weight must be finite and in [0, 1]")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"token": self.token, "signal_type": self.signal_type.value,
+                "weight": self.weight, "source": self.source}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> Signal:
+        return cls(data["token"], SignalType(data["signal_type"]), data["weight"], data["source"])
+
+
+@dataclass
+class SignalSet:
+    """Weighted features and relative domain affinities, not a classification."""
+
+    tokens: Set[str] = field(default_factory=set)
+    weighted_signals: List[Signal] = field(default_factory=list)
+    domain_affinities: Dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.tokens, set) or any(not isinstance(t, str) or not t.strip() for t in self.tokens):
+            raise ValueError("Signal tokens must be a set of non-empty strings")
+        if not isinstance(self.weighted_signals, list) or any(not isinstance(s, Signal) for s in self.weighted_signals):
+            raise ValueError("Weighted signals must be a list of Signal objects")
+        if not isinstance(self.domain_affinities, dict) or any(
+                not isinstance(domain, str) or not domain.strip() or isinstance(score, bool) or
+                not isinstance(score, (int, float)) or not 0 <= score <= 1
+                for domain, score in self.domain_affinities.items()):
+            raise ValueError("Domain affinities must be finite values in [0, 1]")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"tokens": sorted(self.tokens),
+                "weighted_signals": [signal.to_dict() for signal in self.weighted_signals],
+                "domain_affinities": dict(sorted(self.domain_affinities.items()))}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SignalSet:
+        tokens = data.get("tokens", [])
+        if not isinstance(tokens, (list, tuple, set)) or not all(isinstance(t, str) for t in tokens):
+            raise ValueError("Signal tokens must be a collection of strings")
+        affinities = dict(data.get("domain_affinities", {}))
+        if any(not isinstance(domain, str) or isinstance(score, bool) or
+               not isinstance(score, (int, float)) or not 0 <= score <= 1
+               for domain, score in affinities.items()):
+            raise ValueError("Domain affinities must be finite values in [0, 1]")
+        return cls(set(tokens), [Signal.from_dict(item) for item in data.get("weighted_signals", [])], affinities)
+
+
+# ---------------------------------------------------------------------------
+# Relationships
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FileRelationship:
+    """A qualifying, inspectable edge between two logical file paths."""
+
+    source_path: str
+    target_path: str
+    relationship_type: str
+    similarity_score: float
+    shared_tokens: Set[str] = field(default_factory=set)
+
+    def __post_init__(self):
+        if isinstance(self.similarity_score, bool) or not isinstance(self.similarity_score, (int, float)) or not 0 <= self.similarity_score <= 1:
+            raise ValueError("Relationship similarity must be finite and in [0, 1]")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"source_path": self.source_path, "target_path": self.target_path,
+                "relationship_type": self.relationship_type, "similarity_score": self.similarity_score,
+                "shared_tokens": sorted(self.shared_tokens)}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> FileRelationship:
+        return cls(data["source_path"], data["target_path"], data["relationship_type"],
+                   data["similarity_score"], set(data.get("shared_tokens", [])))
+
+
+@dataclass
+class FileCluster:
+    """A connected group and a bounded spanning witness of its relationships."""
+
+    cluster_id: str
+    cluster_name: str
+    file_paths: List[str] = field(default_factory=list)
+    shared_keywords: Set[str] = field(default_factory=set)
+    inferred_domain: str = "Others"
+    inferred_hierarchy: List[str] = field(default_factory=list)
+    cluster_confidence: float = 0.0
+    relationships: List[FileRelationship] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.cluster_confidence, bool) or not isinstance(self.cluster_confidence, (int, float)) or not 0 <= self.cluster_confidence <= 1:
+            raise ValueError("Cluster confidence must be finite and in [0, 1]")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"cluster_id": self.cluster_id, "cluster_name": self.cluster_name,
+                "file_paths": list(self.file_paths), "shared_keywords": sorted(self.shared_keywords),
+                "inferred_domain": self.inferred_domain, "inferred_hierarchy": list(self.inferred_hierarchy),
+                "cluster_confidence": self.cluster_confidence,
+                "relationships": [edge.to_dict() for edge in self.relationships]}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> FileCluster:
+        return cls(data["cluster_id"], data["cluster_name"], list(data.get("file_paths", [])),
+                   set(data.get("shared_keywords", [])), data.get("inferred_domain", "Others"),
+                   list(data.get("inferred_hierarchy", [])), data.get("cluster_confidence", 0.0),
+                   [FileRelationship.from_dict(item) for item in data.get("relationships", [])])
+
+
+# ---------------------------------------------------------------------------
 # FileContext
 # ---------------------------------------------------------------------------
+
+@dataclass
+class OrganizationProposal:
+    """Planning result only; creation neither reserves nor transfers a file."""
+
+    source_path: str
+    target_path: str
+    relative_target: str
+    domain: str
+    hierarchy_segments: List[str]
+    confidence_level: ConfidenceLevel
+    confidence_score: float
+    evidence: List[EvidenceItem]
+    is_rule_override: bool = False
+    rule_name: str = ""
+
+    def __post_init__(self):
+        if (isinstance(self.confidence_score, bool) or
+                not isinstance(self.confidence_score, (int, float)) or
+                not 0 <= self.confidence_score <= 1):
+            raise ValueError("Proposal confidence must be finite and in [0, 1]")
+        if not isinstance(self.confidence_level, ConfidenceLevel):
+            raise ValueError("Proposal confidence level must be a ConfidenceLevel")
+        if not isinstance(self.evidence, list) or any(not isinstance(e, EvidenceItem) for e in self.evidence):
+            raise ValueError("Proposal evidence must be a list of EvidenceItems")
+        if any(not isinstance(e.signal_type, SignalType) or not isinstance(e.description, str) or
+               not isinstance(e.source_field, str) or isinstance(e.weight, bool) or
+               not isinstance(e.weight, (int, float)) or not 0 <= e.weight <= 1 for e in self.evidence):
+            raise ValueError("Proposal evidence must have typed fields and finite unit weights")
+        if not isinstance(self.hierarchy_segments, list) or any(not isinstance(p, str) for p in self.hierarchy_segments):
+            raise ValueError("Proposal hierarchy must be a list of strings")
+        if any(not isinstance(value, str) for value in (self.source_path, self.target_path,
+                   self.relative_target, self.domain, self.rule_name)) or not isinstance(self.is_rule_override, bool):
+            raise ValueError("Proposal paths and labels must be strings, with a boolean override flag")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"source_path": self.source_path, "target_path": self.target_path,
+                "relative_target": self.relative_target, "domain": self.domain,
+                "hierarchy_segments": list(self.hierarchy_segments),
+                "confidence_level": self.confidence_level.value,
+                "confidence_score": self.confidence_score,
+                "evidence": [item.to_dict() for item in self.evidence],
+                "is_rule_override": self.is_rule_override, "rule_name": self.rule_name}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> OrganizationProposal:
+        return cls(data["source_path"], data["target_path"], data["relative_target"],
+                   data["domain"], list(data["hierarchy_segments"]),
+                   ConfidenceLevel(data["confidence_level"]), data["confidence_score"],
+                   [EvidenceItem.from_dict(item) for item in data.get("evidence", [])],
+                   data.get("is_rule_override", False), data.get("rule_name", ""))
 
 @dataclass
 class FileContext:
@@ -249,7 +432,7 @@ class FileContext:
     origin: OriginInfo = field(default_factory=OriginInfo)
 
     # Signals — populated in Phase 09
-    signals: Any = None
+    signals: Optional[SignalSet] = None
 
     # Relationships — populated in Phase 10
     cluster_id: Optional[str] = None
@@ -264,6 +447,10 @@ class FileContext:
 
     # Organization — populated in Phase 12
     proposed_destination: str = ""
+
+    # Reversible bookkeeping prevents repeated cluster runs compounding scores.
+    relationship_base_confidence: Optional[float] = None
+    relationship_confidence_boost: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a plain dictionary suitable for JSON storage."""
@@ -281,7 +468,7 @@ class FileContext:
             "sha256_hash": self.sha256_hash,
             "metadata": self.metadata.to_dict(),
             "origin": self.origin.to_dict(),
-            "signals": self.signals,
+            "signals": self.signals.to_dict() if isinstance(self.signals, SignalSet) else self.signals,
             "cluster_id": self.cluster_id,
             "related_file_paths": list(self.related_file_paths),
             "classification_domain": self.classification_domain,
@@ -290,6 +477,8 @@ class FileContext:
             "confidence_score": self.confidence_score,
             "evidence_list": [e.to_dict() for e in self.evidence_list],
             "proposed_destination": self.proposed_destination,
+            "relationship_base_confidence": self.relationship_base_confidence,
+            "relationship_confidence_boost": self.relationship_confidence_boost,
         }
 
     @classmethod
@@ -312,6 +501,10 @@ class FileContext:
         evidence_data = data.get("evidence_list", [])
         evidence_list = [EvidenceItem.from_dict(e) for e in evidence_data]
 
+        signals = data.get("signals")
+        if isinstance(signals, dict) and {"tokens", "weighted_signals", "domain_affinities"}.intersection(signals):
+            signals = SignalSet.from_dict(signals)
+
         return cls(
             path=data["path"],
             filename=data["filename"],
@@ -326,7 +519,7 @@ class FileContext:
             sha256_hash=data.get("sha256_hash"),
             metadata=metadata,
             origin=origin,
-            signals=data.get("signals"),
+            signals=signals,
             cluster_id=data.get("cluster_id"),
             related_file_paths=list(data.get("related_file_paths", [])),
             classification_domain=data.get("classification_domain", "Others"),
@@ -335,4 +528,6 @@ class FileContext:
             confidence_score=data.get("confidence_score", 0.0),
             evidence_list=evidence_list,
             proposed_destination=data.get("proposed_destination", ""),
+            relationship_base_confidence=data.get("relationship_base_confidence"),
+            relationship_confidence_boost=data.get("relationship_confidence_boost", 0.0),
         )

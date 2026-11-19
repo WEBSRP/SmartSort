@@ -8,6 +8,9 @@
   "start_minimized": false,
   "autostart": false,
   "theme": "system",
+  "enable_origin_detection": true,
+  "enable_deep_content_extraction": true,
+  "sorting_mode": "rules_first",
   "conflict_resolution": "rename",
   "smart_filename_cleanup": false,
   "filename_min_length": 4,
@@ -18,29 +21,70 @@
   "rules": [],
   "categories": {
     "Videos": {
-      "extensions": [".mkv", ".mp4", ".avi", ".mov"],
+      "extensions": [
+        ".mkv",
+        ".mp4",
+        ".avi",
+        ".mov"
+      ],
       "subfolders": {
         "Big_Videos": "Videos/Big_Videos",
         "Small_Videos": "Videos"
       }
     },
     "Documents": {
-      "extensions": [".pdf", ".docx", ".pptx", ".xlsx"]
+      "extensions": [
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx"
+      ]
     },
     "Archives": {
-      "extensions": [".zip", ".rar", ".7z", ".tar.gz"]
+      "extensions": [
+        ".zip",
+        ".rar",
+        ".7z",
+        ".tar.gz"
+      ]
     },
     "Disk Images": {
-      "extensions": [".iso"]
+      "extensions": [
+        ".iso"
+      ]
     },
     "Images": {
-      "extensions": [".jpg", ".jpeg", ".png", ".webp"]
+      "extensions": [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+      ]
     },
     "Cybersecurity": {
-      "keywords": ["nmap", "burp", "wireshark", "metasploit", "rockyou", "wordlist", "kali", "parrot"]
+      "keywords": [
+        "nmap",
+        "burp",
+        "wireshark",
+        "metasploit",
+        "rockyou",
+        "wordlist",
+        "kali",
+        "parrot"
+      ]
     },
     "College": {
-      "keywords": ["assignment", "lecture", "lab", "semester", "notes", "ppt"]
+      "keywords": [
+        "assignment",
+        "lecture",
+        "lab",
+        "semester",
+        "notes",
+        "ppt"
+      ]
     }
-  }
+  },
+  "intelligence_recursive": true,
+  "downloads_recursive": true,
+  "use_desktop_folders": true
 }

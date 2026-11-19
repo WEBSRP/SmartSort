@@ -39,6 +39,8 @@ class FileOperationRecord:
     confidence: str = "CONFIRMED"                # Added
     evidence: List[str] = field(default_factory=list) # Added
     cluster_name: str = ""                       # Added
+    confidence_score: Optional[float] = None      # Unknown for legacy records
+    cluster_id: Optional[str] = None             # Distinguishes same-named groups
 ```
 
 ## Data Structures
@@ -81,13 +83,13 @@ class FileOperationRecord:
   ```
 
 ## Error Handling
-- Atomic write to `SmartSort_Arrangement.md.tmp` with `os.replace` guarantees the report is never corrupted if interrupted.
+- Write to an exclusively created hidden sibling `.SmartSort_Arrangement.*.tmp`, flush and fsync the file, then `os.replace`. Readers see the previous or complete replacement report. Handled write/sync/replace failures preserve the previous report and clean the temporary file. Abrupt termination may leave a hidden temporary file; power-loss durability of directory metadata is not guaranteed.
 
 ## Security Considerations
 - All file links use RFC-compliant `file:///` local URIs with zero external web dependencies.
 
 ## Performance Considerations
-- Markdown report generation executes in < 2 ms for 500 files.
+- Target: < 2 ms for 500 files. **Not met** by the measured implementation; see the validation notes below.
 
 ## CI / Headless Requirements
 - Zero Qt imports. 100% headless test execution.
@@ -99,9 +101,9 @@ class FileOperationRecord:
   - Test report atomic write works reliably.
 
 ## Acceptance Criteria
-- [ ] `generate_report()` outputs enhanced report with confidence and evidence.
-- [ ] Atomic write and offline `file:///` links preserved.
-- [ ] 100% pass on report test suite.
+- [x] `generate_report()` outputs enhanced report with confidence and evidence.
+- [x] Atomic write and offline `file:///` links preserved.
+- [x] 100% pass on report test suite.
 
 ## Dependencies
 - Standard library (`pathlib`, `os`, `datetime`).
@@ -110,5 +112,58 @@ class FileOperationRecord:
 - Must NOT alter copy-verify-delete transfer safety.
 
 ## Completion Checklist
-- [ ] Report generation updated.
-- [ ] Unit tests passing.
+- [x] Report generation updated.
+- [x] Unit tests passing.
+
+
+## Implementation State — 2026-11-18
+
+Functional implementation is complete in the working tree. Execution snapshots
+confidence, numeric score, evidence, cluster name/ID and planning warnings before
+callbacks, and copies the metadata to every produced operation record, including
+failure, duplicate and skip outcomes. The original execution loop and transfer
+protocol are unchanged. Added dataclass fields have defaults and follow all old
+positional fields; legacy records keep their confidence label with no fabricated
+percentage and an explicit missing-evidence message.
+
+The index groups all recorded outcomes by actual destination directory relative
+to the root (for example `College/DBMS/Lectures`). Collision records use the final
+renamed path. Failed/skipped destinations are explicitly labeled **Intended
+Destination**. Cluster summaries link to stable per-record anchors; IDs distinguish
+same-named groups. Each record retains source/target paths, category, rule, size,
+SHA-256 when recorded, status, error and local actions, plus all recorded evidence.
+Failed/skipped actions link to the source and source folder, duplicates link to
+both preserved copies, and moved files link to their final file/folder. Confidence
+is described as an estimate, not a calibrated probability.
+
+This remains a **latest-operation snapshot**, replacing the previous index rather
+than accumulating history. Cancellation and planning warnings are visible; files
+not processed before cancellation do not acquire invented records. No new GUI,
+cloud dependency, content extraction or Qt import is required.
+
+Report text escapes Markdown/HTML, uses variable-length code spans for paths and
+IDs, flattens embedded line breaks, and percent-encoded `file:///` destinations.
+Explicit generated anchors avoid punctuation/Unicode heading-slug ambiguity.
+The sibling temporary file avoids the old predictable `.tmp` symlink hazard and
+cross-device rename failures. It is hidden and excluded from directory scans.
+Concurrent report writers use distinct temporaries; the last replacement wins.
+The file is synced before replacement, but the directory is not fsynced, so this
+is not a promise of power-loss durability on every filesystem.
+
+### Validation and remaining target
+
+- Baseline: **1,306 passed, 1 skipped**.
+- Added **28 tests** for metadata on all outcomes and cancellation, hierarchy,
+  confidence, clusters, legacy/empty records, Unicode/Markdown paths, local URI
+  actions, and injected partial-write/sync/replace failures with cleanup.
+- Full suite: **1,334 passed, 1 skipped**, preserving pytest's actual exit status
+  despite the existing Qt teardown exit-zero backstop.
+- The entire original execution-loop AST matches the pre-phase snapshot;
+  `FileUtils` SHA-256 is unchanged. Compilation and whitespace checks pass.
+- A separate CommonMark render check confirms adversarial paths/cluster names
+  and evidence do not create script/image elements or remote hyperlinks.
+- Measured 500 records, 10 clusters, two evidence strings per record, approximately
+  432 KB of Markdown: first call **30.634 ms**, warmed median **29.559 ms**, range
+  **27.669–31.283 ms** over 20 runs, including write/flush/fsync/replace. The **2 ms
+  target is not met**. These are local observations rather than portable latency
+  guarantees. Phase 17 remains the next performance/caching phase.

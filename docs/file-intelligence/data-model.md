@@ -40,6 +40,7 @@ class SignalType(Enum):
     EXIF_CAMERA = "EXIF_CAMERA"
     DIRECTORY_CONTEXT = "DIRECTORY_CONTEXT"
     CLUSTER_CONTEXT = "CLUSTER_CONTEXT"
+    EXTENSION_HINT = "EXTENSION_HINT"
 ```
 
 ---
@@ -112,8 +113,15 @@ class SignalSet:
     domain_affinities: Dict[str, float] = field(default_factory=dict) # e.g. {'College': 0.85, 'Cybersecurity': 0.1}
 ```
 
+Implemented in Phase 09. `Signal` is frozen and validates its token, type,
+source field, and finite [0,1] weight. `SignalSet` has independent containers,
+validated affinity values, and `to_dict()` / `from_dict()` helpers; tokens and
+affinity keys serialize in sorted order. Domain affinities are normalized
+relative evidence scores, not confidence values. Both types are exported by
+`src.core.file_intelligence`.
+
 ### 3.5 `FileContext` / `FileProfile`
-The central immutable representation for every analyzed file.
+The central typed representation for every analyzed file.
 
 ```python
 @dataclass
@@ -135,7 +143,7 @@ class FileContext:
     # Extraction & Provenance
     metadata: ExtractedMetadata = field(default_factory=ExtractedMetadata)
     origin: OriginInfo = field(default_factory=OriginInfo)
-    signals: SignalSet = field(default_factory=SignalSet)
+    signals: Optional[SignalSet] = None  # Populated by SignalExtractor in Phase 09
 
     # Cluster & Relationship References
     cluster_id: Optional[str] = None
@@ -148,7 +156,18 @@ class FileContext:
     confidence_score: float = 0.0                # [0.0 - 1.0]
     evidence_list: List[EvidenceItem] = field(default_factory=list)
     proposed_destination: str = ""
+
+    # Phase 10: reversible relationship confidence contribution
+    relationship_base_confidence: Optional[float] = None
+    relationship_confidence_boost: float = 0.0
 ```
+
+`FileContext` remains mutable. Populated signal sets now round-trip through its
+JSON helpers. `None` remains the pre-extraction default for compatibility with
+earlier phases; unrecognized legacy placeholder dictionaries are preserved.
+Relationship confidence bookkeeping also round-trips, with defaults for older
+payloads. Relationship models below are implemented in Phase 10; the organization
+proposal is implemented in Phase 12.
 
 ### 3.6 `FileRelationship` & `FileCluster`
 ```python
@@ -157,7 +176,7 @@ class FileRelationship:
     """Verifiable connection between two files."""
     source_path: str
     target_path: str
-    relationship_type: str                       # SIBLING_SERIES, ARCHIVE_EXTRACT, PROJECT_COMPONENT, SHARED_ORIGIN
+    relationship_type: str                       # SIBLING_SERIES, ARCHIVE_EXTRACT, SHARED_ORIGIN, TOKEN_SIMILARITY
     similarity_score: float                      # [0.0 - 1.0]
     shared_tokens: Set[str] = field(default_factory=set)
 
@@ -171,7 +190,15 @@ class FileCluster:
     inferred_domain: str = "Others"
     inferred_hierarchy: List[str] = field(default_factory=list) # e.g. ['College', 'DBMS']
     cluster_confidence: float = 0.0
+    relationships: List[FileRelationship] = field(default_factory=list)
 ```
+
+Both relationship models implement `to_dict()` / `from_dict()` with sorted set
+serialization and finite score validation in `[0, 1]`. A cluster retains `n - 1`
+qualifying spanning witnesses, rather than every possible pair. Its confidence
+is the mean witness score; it is not a calibrated domain probability or a
+guarantee of all-pairs similarity. See [relationships.md](relationships.md) for
+the graph guards and repeat-safe propagation contract.
 
 ### 3.7 `OrganizationProposal`
 ```python
@@ -189,6 +216,15 @@ class OrganizationProposal:
     is_rule_override: bool = False
     rule_name: str = ""
 ```
+
+Implemented and exported in Phase 12 with `to_dict()`/`from_dict()` JSON helpers,
+typed field validation, finite unit confidence/evidence weights, and independent
+list copies during serialization and planning. This model is a proposal, not a
+reservation or permission to write. Deserialization does not validate filesystem
+containment. `OrganizationPlanner.plan_file()` canonicalizes and checks paths
+before creating a proposal and updating `FileContext.proposed_destination`.
+See [organization-planner.md](organization-planner.md) for the planning-time
+boundary and execution responsibilities.
 
 ---
 

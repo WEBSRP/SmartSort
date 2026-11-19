@@ -1,6 +1,4 @@
 import sys
-import os
-import atexit
 import pytest
 from PyQt6.QtWidgets import QApplication
 
@@ -15,8 +13,5 @@ def qapp():
     # Flush all pending Qt events (deferred deletions, signals, etc.)
     for _ in range(20):
         app.processEvents()
-    # Register os._exit(0) as an atexit backstop. This guarantees the process
-    # exits even if Qt background threads or non-daemon Python threads are still
-    # alive after the test session. By the time atexit runs, pytest has already
-    # written the final test summary to stdout, so no output is lost.
-    atexit.register(os._exit, 0)
+    # Let pytest return its actual status and Python shut down normally.
+    # Forced exit here masks failing tests and cannot prove worker cleanup.

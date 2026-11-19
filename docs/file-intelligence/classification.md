@@ -1,148 +1,151 @@
 # SmartSort File Intelligence Engine: Classification & Confidence
 
-## 1. Overview & Objectives
+## Implementation status
 
-The Multi-Signal Classification Engine determines:
-1. **Primary Domain**: What broad domain does this file belong to? (`College`, `Projects`, `Cybersecurity`, `Work`, `Media`, `Archives`, `Others`)
-2. **Subcategory Hierarchy**: What subfolders describe its specific topic? (e.g. `DBMS/Lectures`, `SmartSort/Documentation`)
-3. **Epistemic Confidence**: How certain is the classification based on verifiable evidence? (`CONFIRMED`, `PROBABLE`, `UNCERTAIN`, `UNKNOWN`)
-4. **Evidence Justification**: An explicit, human-readable list of reasons explaining *why* the destination was chosen.
+Phase 11 implements `MultiSignalClassifier` in
+`src/core/file_intelligence/classifier.py`, exported by the package.
+`classify(context)` updates the per-file domain, subcategories, confidence level,
+confidence score and evidence list; it returns `None`.
+`evaluate_domain_scores(context)` returns strengths for all seven roots without
+mutating the context. Neither method opens files, accesses the network, imports
+Qt, moves files, or selects a destination. The optional `config` constructor
+argument is reserved and is not read or initialized implicitly.
 
----
+## Domain taxonomy
 
-## 2. General-Purpose Domain Taxonomy
+| Root | Example subcategories |
+| --- | --- |
+| College | DBMS/Lectures, OS/Assignments, Machine_Learning/Labs, CS101/Exams |
+| Projects | SmartSort/Source, PortfolioApp/Design, SmartSort/Documentation, Releases |
+| Cybersecurity | Tools, Reports, Captures, Wordlists, Exploits |
+| Work | Invoices, Contracts, Receipts, Reports |
+| Media | Images, Videos, Audio |
+| Archives | No additional hierarchy |
+| Others | No additional hierarchy |
 
-The taxonomy is extensible and domain-agnostic:
+Phase 09 affinities are reused. `Code` rolls up to `Projects`, `Personal` to
+`Work`, and image/audio/video roots to `Media`. Alias votes use their maximum,
+not their sum. A small classifier-local vocabulary adds documentation/design/
+release, security capture/tool, and billing/legal terms. Code language metadata
+supports every language emitted by Phase 07; words such as `Go` and `Rust` in
+ordinary prose do not independently establish a code domain. The language field
+preserves `TypeScript`/`JavaScript` identities across lexical splitting and SQL
+across the database alias fold.
 
-```
-├── College/
-│   └── {Course_Name}/          (e.g. DBMS, OS, Machine_Learning, CS101)
-│       ├── Lectures/           (Slides, lecture notes, textbook chapters)
-│       ├── Assignments/        (Homework, problem sets, solutions)
-│       ├── Labs/               (Lab manuals, code submissions, data)
-│       └── Exams/              (Midterms, finals, quizzes, study guides)
-│
-├── Projects/
-│   └── {Project_Name}/         (e.g. SmartSort, LinuxKernel, PortfolioApp)
-│       ├── Source/             (Code archives, repositories, scripts)
-│       ├── Documentation/      (Architecture docs, specs, guides)
-│       ├── Design/             (Figma exports, mockups, UI assets)
-│       └── Releases/           (Compiled binaries, deb packages, releases)
-│
-├── Cybersecurity/
-│   ├── Tools/                  (Security tools, custom scripts)
-│   ├── Reports/                (Audit reports, vulnerability scans)
-│   ├── Captures/               (PCAP files, network logs)
-│   ├── Wordlists/              (Dictionaries, password lists)
-│   └── Exploits/               (PoC code, CVE advisories)
-│
-├── Work/
-│   ├── Invoices/               (Billing, client invoices)
-│   ├── Contracts/              (Agreements, NDAs, legal documents)
-│   ├── Receipts/               (Expense receipts, payment confirmations)
-│   └── Reports/                (Quarterly reviews, status decks)
-│
-├── Media/
-│   ├── Images/                 (Photos, graphics, wallpapers)
-│   ├── Videos/                 (Screen recordings, movies, clips)
-│   └── Audio/                  (Podcasts, music tracks, voice notes)
-│
-├── Archives/                   (Generic compressed backups, system snapshots)
-└── Others/                     (Unclassified fallback files)
-```
+## Channel scoring
 
----
+| Channel | Weight | Signal types |
+| --- | ---: | --- |
+| Title | 0.25 | DOCUMENT_TITLE |
+| Origin | 0.20 | ORIGIN_DOMAIN |
+| Content | 0.20 | DOCUMENT_HEADING, CONTENT_KEYWORD, CODE_SYNTAX, MEDIA_METADATA, EXIF_CAMERA |
+| Filename | 0.15 | FILENAME_TOKEN |
+| Cluster | 0.15 | CLUSTER_CONTEXT |
+| Archive | 0.05 | ARCHIVE_CONTENT |
 
-## 3. Classification Scoring Algorithm
+Typed weighted signals are authoritative. Missing signals and legacy unweighted
+sets are re-extracted from a copied context; unverifiable aggregate affinity
+priors are not used as independent evidence. This does not modify stored signals.
+Zero-weight records are ignored. Repeated canonical tokens within a channel use
+only the strongest record, with deterministic tie-breaking. Headings and body
+text therefore share one corroboration channel, even though their enum types
+are different.
 
-The classifier evaluates evidence across multiple independent channels:
+For each retained record:
 
-$$\text{TotalScore}(D) = \sum_{k} W_k \cdot S_k(D)$$
-
-Where the scoring channels $S_k$ and weights $W_k$ are:
-
-| Channel $k$ | Weight $W_k$ | Evidence Evaluated |
-|---|---|---|
-| **Document Title** | $0.25$ | High-precision title matches in PDF/DOCX metadata |
-| **Origin Domain** | $0.20$ | Known LMS domain, repository host, or security portal |
-| **Content Text** | $0.20$ | Domain keyword density in extracted text snippet |
-| **Filename Tokens** | $0.15$ | Sanitized tokens matching domain keywords |
-| **Cluster Bonus** | $0.15$ | Sibling file consensus from Relationship Engine |
-| **Archive Content** | $0.05$ | Internal file types found within archives |
-
----
-
-## 4. Transparent Confidence System
-
-Confidence is not an arbitrary black-box percentage. It maps directly to verifiable corroborating signals:
-
-```python
-def compute_confidence(scores: Dict[str, float], evidence: List[EvidenceItem]) -> Tuple[ConfidenceLevel, float]:
-    """
-    Computes normalized confidence score and assigns explicit ConfidenceLevel enum.
-    """
-    if not scores:
-        return ConfidenceLevel.UNKNOWN, 0.0
-
-    best_domain, top_score = max(scores.items(), key=lambda x: x[1])
-    
-    # Count independent corroborating evidence channels
-    signal_types = {item.signal_type for item in evidence}
-    corroboration_count = len(signal_types)
-
-    # Multi-signal corroboration boost
-    if corroboration_count >= 3:
-        adjusted_score = min(1.0, top_score * 1.15)
-    elif corroboration_count == 1:
-        adjusted_score = min(0.60, top_score * 0.85) # Cap single-signal confidence
-    else:
-        adjusted_score = top_score
-
-    # Assign Epistemic Level
-    if adjusted_score >= 0.85 and corroboration_count >= 2:
-        level = ConfidenceLevel.CONFIRMED
-    elif adjusted_score >= 0.60:
-        level = ConfidenceLevel.PROBABLE
-    elif adjusted_score >= 0.35:
-        level = ConfidenceLevel.UNCERTAIN
-    else:
-        level = ConfidenceLevel.UNKNOWN
-
-    return level, round(adjusted_score, 2)
+```text
+reliability = min(1, signal.weight / Phase09_base_weight)
+channel_mass[domain] += reliability × rolled_up_token_affinity[domain]
+channel_strength = channel_mass / max(1, sum(channel_mass))
+score[domain] = sum(weight[channel] × channel_strength[domain])
+                / sum(weight[channel] for available semantic channels)
 ```
 
----
+The cluster base weight is 0.30, matching Phase 10 propagation. Empty channels
+are omitted from the denominator, rather than treated as negative observations.
+The returned scores lie in `[0, 1]`; they need not sum to one and are not
+calibrated probabilities. Unknown tokens do not add domain mass.
 
-## 5. Evidence Item Formulation
+Directory and extension hints are weak fallback evidence. They never count as
+corroborating semantic channels, never determine semantic subcategories, and are
+excluded when any semantic channel contributes. When they are the only evidence,
+their aggregate strength is capped at 0.20. Thus `random.zip` remains
+`Others/UNKNOWN`; its extension is not mistaken for semantic archive certainty.
 
-Every proposal generates a structured list of human-readable `EvidenceItem` records:
+Origin records must match hostname/site features independently derived from the
+context's validated origin URL/hostname. URL paths, credentials, query strings,
+fragments and arbitrary `site_name` strings do not acquire origin votes. Cluster
+records require an assigned cluster ID. These checks verify representation and
+association, not the truth of external metadata.
 
-```python
-# Example generated for Lecture_3_DBMS.zip:
-evidence = [
-    EvidenceItem(
-        signal_type=SignalType.ORIGIN_DOMAIN,
-        description="Downloaded from University Canvas LMS (canvas.stanford.edu)",
-        weight=0.85,
-        source_field="origin.domain"
-    ),
-    EvidenceItem(
-        signal_type=SignalType.ARCHIVE_CONTENT,
-        description="Archive contains PowerPoint presentation (.pptx) and PDF slides",
-        weight=0.70,
-        source_field="metadata.toc_entries"
-    ),
-    EvidenceItem(
-        signal_type=SignalType.FILENAME_TOKEN,
-        description="Filename contains course keywords 'DBMS' and 'Lecture'",
-        weight=0.65,
-        source_field="filename"
-    ),
-    EvidenceItem(
-        signal_type=SignalType.CLUSTER_CONTEXT,
-        description="Grouped with sibling files: Lecture_1_DBMS.pdf, Lecture_2_DBMS.pptx",
-        weight=0.60,
-        source_field="cluster_id"
-    )
-]
+Phase 13 batch integration additionally supplies a cluster's known inferred root
+as a bounded `CLUSTER_CONTEXT` token with source `cluster.inferred_domain` and
+weight `0.30 × cluster_confidence`. This supports sparse members without counting
+the cluster as an independent observation or bypassing conflict/uncertainty caps.
+
+## Confidence and ambiguity
+
+Only channels with a unique preference for the winning domain corroborate it.
+Cluster hints affect scores but do not count as independent observations of this
+file. Losing channels cannot supply a winning-domain corroboration boost.
+
+```text
+3 or more corroborating channels: min(1, top_score × 1.15)
+0 or 1 corroborating channels: min(0.60, top_score × 0.85)
+2 corroborating channels: top_score
 ```
+
+The adjusted score maps to the roadmap tiers:
+
+- `CONFIRMED`: at least 0.85 and at least two corroborating channels.
+- `PROBABLE`: at least 0.60.
+- `UNCERTAIN`: at least 0.35.
+- `UNKNOWN`: below 0.35, with domain fallback to `Others`.
+
+If the top two raw domain strengths differ by less than 0.10, confidence is
+capped at 0.59. Ties use deterministic alphabetical ordering but remain uncertain
+or unknown. Tier comparisons use unrounded numbers; the stored float is not
+rounded upward across a threshold. These are transparent heuristics, not
+empirically calibrated correctness rates. Available channels can contain
+correlated metadata even when they have different field origins.
+
+## Hierarchy and evidence
+
+Course labels recognize DBMS, OS, Machine Learning and bounded filename course
+codes. Project names require a bounded ASCII role-delimited stem such as
+`SmartSort_Source`; a URL, absolute path, or archive member cannot supply a
+project name. Generic role prefixes are not treated as project identities.
+Names are at most 64 characters and contain no path separators. The planner
+will still need to enforce destination containment in Phase 12.
+
+Subtype selection prefers explicit filename terms, then title terms, then
+canonical signal tokens. Raw bounded lexical words preserve distinctions such
+as CVE/Exploits that Phase 09 intentionally folds into `security`. Contradictory
+subtypes have a fixed deterministic priority. Other subjects and arbitrary
+project naming patterns may yield a subtype without a topic/project folder;
+there is no open-ended course or entity recognizer in this phase.
+
+Evidence records name the channel, safe canonical token, supported domain,
+strength and known source field. All retained domain-contributing records are
+explained, including counterevidence for losing domains. The evidence weight is
+record reliability times domain affinity, not the final weighted channel share.
+Repeated records are deduplicated, and ignored weak hints are not presented as
+contributing evidence. Unknown source strings are replaced by known field names.
+Descriptions do not copy full paths, URLs, source strings or metadata excerpts.
+
+## Repeatability and bounds
+
+Classification replaces stale outputs rather than accumulating evidence or
+boosts. It recomputes from signals, disregards previous classification scores,
+and clears Phase 10 confidence bookkeeping to prevent an old relationship boost
+being mistaken for part of the new baseline. Cluster IDs, related paths, stored
+signals, origin/metadata and proposed destinations are otherwise untouched.
+Repeated, permuted and JSON-reloaded inputs produce the same outputs.
+
+At most 2,080 weighted signals/tokens are accepted. Signal tokens are bounded to
+64 characters and restricted to canonical alphanumeric/underscore forms. Source
+field validation is bounded to 80 characters. Oversized weighted batches raise
+`ValueError` before output mutations; individual unsafe tokens are ignored.
+Fallback extraction retains Phase 09 budgets. Hierarchy lexical inspection uses
+the bounded tokenizer, course/project patterns inspect at most 512 stem
+characters, and the classifier stores no cache or background workers.

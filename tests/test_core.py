@@ -1,6 +1,31 @@
 import os
 import pytest
 import shutil
+
+
+def test_intelligence_preview_plain_render_contract(qapp):
+    from src.gui.main_window import format_directory_review
+    from src.core.directory_organizer import OrganizePlanItem, DirectoryPreviewSummary
+    from PyQt6.QtWidgets import QPlainTextEdit
+    item = OrganizePlanItem('/in/<literal>.pdf', '/in/College/DBMS/<literal>.pdf', 'College',
+                             'Intelligence', 'CONFIRMED', ['Title DBMS', 'Origin Canvas'], .92,
+                             'cluster', 'DBMS_Lectures')
+    view = QPlainTextEdit()
+    view.setPlainText(format_directory_review(DirectoryPreviewSummary(1, {'College': 1}, [item], 1), '/in'))
+    assert 'College/DBMS/<literal>.pdf [CONFIRMED (92%)]' in view.toPlainText()
+    assert 'Evidence: Origin Canvas' in view.toPlainText() and 'Clusters discovered: 1' in view.toPlainText()
+    view.close()
+
+
+def test_intelligence_setting_boolean_roundtrip(tmp_path):
+    from src.utils.config import ConfigManager
+    config = ConfigManager(config_path=tmp_path / 'preferences.json')
+    assert config.get('enable_deep_content_extraction') is True
+    config.set('enable_deep_content_extraction', False)
+    config.set('enable_origin_detection', False)
+    loaded = ConfigManager(config_path=config.config_path)
+    assert loaded.get('enable_deep_content_extraction') is False
+    assert loaded.get('enable_origin_detection') is False
 from src.utils.file_utils import FileUtils
 from src.organizer import FileOrganizer
 from src.utils.config import ConfigManager
@@ -104,7 +129,7 @@ def test_duplicate_detection(temp_dir):
     result, info = organizer.process_file(str(src_file))
     assert result == "DUPLICATE"
     assert info == str(dst_file)
-    assert os.path.exists(src_file) # Original should NOT be deleted if it's a duplicate and we skipped
+    assert not os.path.exists(src_file) # Matching source copy is removed after hash verification.
 
 def test_unique_path_generation(temp_dir):
     path = temp_dir / "file.txt"
@@ -873,11 +898,19 @@ def test_tray_icon_creation(monkeypatch):
 def test_start_minimized_config(temp_dir, monkeypatch):
     from unittest.mock import MagicMock
     
+    # Load real Qt-dependent helpers before replacing the application factory.
+    import src.gui.startup
+
     mock_app = MagicMock()
     monkeypatch.setattr("PyQt6.QtWidgets.QApplication", lambda *args: mock_app)
     
+    # Main startup guard is independent of these tray-visibility assertions.
+    guard = MagicMock()
+    guard.acquire_or_notify.return_value = True
+    monkeypatch.setattr("src.gui.single_instance.SingleInstanceGuard", lambda *args, **kwargs: guard)
+
     mock_gui = MagicMock()
-    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args: mock_gui)
+    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args, **kwargs: mock_gui)
     
     mock_config = MagicMock()
     mock_config.get.return_value = True
@@ -887,6 +920,8 @@ def test_start_minimized_config(temp_dir, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["main.py", "--service"])
     
     import main
+    monkeypatch.setattr(main, "ensure_user_icons_installed", lambda *args: None)
+    monkeypatch.setattr(main, "configure_application_icon", lambda app: None)
     try:
         main.main()
     except SystemExit:
@@ -915,6 +950,7 @@ def test_daemon_startup_shutdown(temp_dir, monkeypatch):
     monkeypatch.setattr(time, "sleep", mock_sleep)
     
     import main
+    monkeypatch.setattr(main, "ensure_user_icons_installed", lambda *args: None)
     main.run_daemon()
     
     mock_monitor.start.assert_called_once()
@@ -1137,12 +1173,20 @@ def test_dashboard_startup_components(temp_dir, monkeypatch):
 def test_app_startup_without_tray_shows_window(temp_dir, monkeypatch):
     from unittest.mock import MagicMock
     
+    # Load real Qt-dependent helpers before replacing the application factory.
+    import src.gui.startup
+
     mock_app = MagicMock()
     monkeypatch.setattr("PyQt6.QtWidgets.QApplication", lambda *args: mock_app)
     
+    # Main startup guard is independent of these tray-visibility assertions.
+    guard = MagicMock()
+    guard.acquire_or_notify.return_value = True
+    monkeypatch.setattr("src.gui.single_instance.SingleInstanceGuard", lambda *args, **kwargs: guard)
+
     mock_gui = MagicMock()
     mock_gui.tray_available = False
-    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args: mock_gui)
+    monkeypatch.setattr("src.gui.main_window.SmartSortGUI", lambda *args, **kwargs: mock_gui)
     
     mock_config = MagicMock()
     mock_config.get.return_value = True
@@ -1152,6 +1196,8 @@ def test_app_startup_without_tray_shows_window(temp_dir, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["main.py", "--service"])
     
     import main
+    monkeypatch.setattr(main, "ensure_user_icons_installed", lambda *args: None)
+    monkeypatch.setattr(main, "configure_application_icon", lambda app: None)
     try:
         main.main()
     except SystemExit:

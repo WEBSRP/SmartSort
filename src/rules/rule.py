@@ -6,13 +6,14 @@ from src.rules.conditions import (
 )
 
 class Rule:
-    def __init__(self, id: str, name: str, enabled: bool, priority: int, conditions: List[Condition], destination: str):
+    def __init__(self, id: str, name: str, enabled: bool, priority: int, conditions: List[Condition], destination: str, apply_in_intelligence: bool = False):
         self.id = id
         self.name = name
         self.enabled = enabled
         self.priority = priority
         self.conditions = conditions
         self.destination = destination
+        self.apply_in_intelligence = apply_in_intelligence
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Rule':
@@ -59,7 +60,10 @@ class Rule:
             else:
                 raise ValueError(f"Unsupported condition type: {c_type}")
 
-        return cls(rule_id, name, enabled, priority, cond_list, destination)
+        manual = data.get("apply_in_intelligence", False)
+        if not isinstance(manual, bool):
+            raise ValueError("apply_in_intelligence must be a boolean")
+        return cls(rule_id, name, enabled, priority, cond_list, destination, manual)
 
     def evaluate(self, file_path: str, file_size: int = None) -> bool:
         if not self.enabled:
@@ -80,7 +84,7 @@ class Rule:
             elif isinstance(c, RegexCondition):
                 raw_conds.append({"type": "regex", "value": c.pattern_str})
         
-        return {
+        result = {
             "id": self.id,
             "name": self.name,
             "enabled": self.enabled,
@@ -88,3 +92,6 @@ class Rule:
             "conditions": raw_conds,
             "destination": self.destination
         }
+        if self.apply_in_intelligence:
+            result["apply_in_intelligence"] = True
+        return result

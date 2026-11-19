@@ -117,6 +117,12 @@ class ConfigManager:
             "start_minimized": bool,
             "autostart": bool,
             "theme": str,
+            "enable_origin_detection": bool,
+            "enable_deep_content_extraction": bool,
+            "sorting_mode": str,
+            "use_desktop_folders": bool,
+            "intelligence_recursive": bool,
+            "downloads_recursive": bool,
             "smart_filename_cleanup": bool,
             "filename_min_length": int,
             "filename_max_length": int,
@@ -131,6 +137,9 @@ class ConfigManager:
                     type_names = expected_type.__name__ if not isinstance(expected_type, tuple) else " or ".join(t.__name__ for t in expected_type)
                     raise ValueError(f"Key '{key}' must be of type {type_names}, got {type(val).__name__}")
         
+        if config.get("sorting_mode", "rules_first") not in ("rules_first", "intelligence"):
+            raise ValueError("Key 'sorting_mode' must be 'rules_first' or 'intelligence'")
+
         # Validate categories structure
         if "categories" in config:
             for cat_name, cat_data in config["categories"].items():
@@ -191,6 +200,12 @@ class ConfigManager:
             "start_minimized": False,
             "autostart": False,
             "theme": "system",
+            "enable_origin_detection": True,
+            "enable_deep_content_extraction": True,
+            "sorting_mode": "rules_first",
+            "use_desktop_folders": True,
+            "intelligence_recursive": True,
+            "downloads_recursive": True,
             "smart_filename_cleanup": False,
             "filename_min_length": 4,
             "filename_max_length": 80,
@@ -209,6 +224,9 @@ class ConfigManager:
                             defaults[k] = copy.deepcopy(v)
             except Exception:
                 pass
+
+        if defaults.get("sorting_mode") not in ("rules_first", "intelligence"):
+            defaults["sorting_mode"] = "rules_first"
 
         # Migrate threshold in defaults if it is in GB representation
         val = defaults.get("large_file_threshold_gb")
@@ -254,6 +272,12 @@ class ConfigManager:
             "start_minimized": bool,
             "autostart": bool,
             "theme": str,
+            "enable_origin_detection": bool,
+            "enable_deep_content_extraction": bool,
+            "sorting_mode": str,
+            "use_desktop_folders": bool,
+            "intelligence_recursive": bool,
+            "downloads_recursive": bool,
             "smart_filename_cleanup": bool,
             "filename_min_length": int,
             "filename_max_length": int,
@@ -266,7 +290,8 @@ class ConfigManager:
             for key, expected_type in required_keys.items():
                 if key in loaded_config:
                     val = loaded_config[key]
-                    if isinstance(val, expected_type):
+                    if (isinstance(val, expected_type) and
+                            (key != "sorting_mode" or val in ("rules_first", "intelligence"))):
                         merged_config[key] = copy.deepcopy(val)
 
         # Migrate legacy threshold in merged config
@@ -332,6 +357,12 @@ class ConfigManager:
                 "start_minimized": False,
                 "autostart": False,
                 "theme": "system",
+                "enable_origin_detection": True,
+                "enable_deep_content_extraction": True,
+                "sorting_mode": "rules_first",
+                "use_desktop_folders": True,
+                "intelligence_recursive": True,
+                "downloads_recursive": True,
                 "smart_filename_cleanup": False,
                 "filename_min_length": 4,
                 "filename_max_length": 80,

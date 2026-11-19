@@ -33,10 +33,10 @@ class ExtensionCondition(Condition):
             self.extensions = [str(value).lower().strip()]
 
     def evaluate(self, file_path: str, file_size: int = None) -> bool:
-        ext = os.path.splitext(file_path)[1].lower()
+        filename = os.path.basename(file_path).lower()
         for cond_ext in self.extensions:
             target = cond_ext if cond_ext.startswith('.') else '.' + cond_ext
-            if ext == target:
+            if filename.endswith(target):
                 return True
         return False
 

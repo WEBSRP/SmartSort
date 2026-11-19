@@ -1,5 +1,14 @@
 # CI Headless Test Hang — Post-Mortem & Resolution
 
+
+> **Current status (Phase 20, 2026-11-18):** This is a historical report. The
+> `atexit.register(os._exit, 0)` workaround described below has been removed:
+> it masked failing pytest exit codes and did not prove thread cleanup. The
+> current fixture drains Qt events and exits naturally. Subprocess canaries
+> verify pass=0/fail=1; repeated headless runs independently inventory workers
+> and timers. See `reports/file_intelligence_implementation.md` for evidence
+> and the remaining hosted-CI/performance certification limits.
+
 **Date:** 2026-07-28  
 **Severity:** Critical — blocked all CI merges  
 **Status:** Resolved  

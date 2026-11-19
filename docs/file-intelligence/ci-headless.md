@@ -57,3 +57,18 @@ All File Intelligence additions must run seamlessly within the existing `.github
 ```
 
 Any test or module that fails to terminate normally under `xvfb-run` or `QT_QPA_PLATFORM=offscreen` is considered a **release-blocking critical failure**.
+
+
+## Phase 20 validation update
+
+The former Qt teardown forced exit-zero backstop was removed after a controlled
+failure demonstrated that it made the CLI report success despite failed tests.
+`tests/test_ci_exit.py` now verifies both successful and failing subprocess exit
+codes using the real session Qt fixture. No production logic changed.
+
+The local workflow-style and offscreen validation runs exited naturally with no
+Python worker threads, tracked running QThreads/active QTimers or child processes
+at final inventory. This is observed evidence, not an absolute guarantee against
+future hangs. Hosted Ubuntu/Python 3.12 was not reproduced by the Debian/Python
+3.13 local environment. See the final implementation report for the exact
+commands, results, artifact checks and outstanding performance/release gates.

@@ -18,6 +18,12 @@ This phase connects the intelligence components built in Phases 01-12 to the exi
 
 ## Files To Modify
 - `src/core/directory_organizer.py`: Integrate intelligence components into `plan()`, `preview()`, and `execute()`.
+- `src/core/file_intelligence/metadata.py`: Add an opt-out keyword for the
+  builder's legacy xattr probe; existing callers retain the default behavior.
+- `src/core/file_intelligence/classifier.py`: Accept the explicit
+  `cluster.inferred_domain` source field used by batch integration.
+- `src/core/file_intelligence/relationships.py`: Exclude weak directory/extension
+  votes from typed cluster-domain consensus, as required by integration fixtures.
 
 ## Existing Components To Reuse
 - `src/core/directory_organizer.py`: Reuses `scan()`, `execute()`, `generate_report()`, `_validate_root()`.
@@ -56,6 +62,11 @@ class DirectoryPreviewSummary:
   6. Run `MultiSignalClassifier.classify()` on each context.
   7. Run `OrganizationPlanner.plan_file()` to generate `OrganizePlan`.
 
+Implementation evaluates a batch snapshot of configured rules before deep
+profiling: matching rules bypass content/history reads and still use the Phase
+12 planner. Only unmatched, successfully profiled contexts enter clustering.
+This preserves policy precedence and avoids work whose result would be discarded.
+
 ## Error Handling
 - Failed extractions fall back to standard extension-based categorization.
 - Existing failure isolation during `execute()` remains strictly enforced.
@@ -65,7 +76,8 @@ class DirectoryPreviewSummary:
 - Root path containment verified on every proposed move.
 
 ## Performance Considerations
-- Batch intelligence analysis for 100 files executes in < 1.0 second.
+- Target: batch intelligence analysis for 100 files executes in < 1.0 second.
+  Markdown and matched-rule fixtures meet it; PDF analysis does not (see below).
 
 ## CI / Headless Requirements
 - Zero Qt imports. 100% headless test execution.
@@ -78,9 +90,9 @@ class DirectoryPreviewSummary:
   - Regression: Run all 28 existing tests in `tests/test_directory_organizer.py` verifying 100% pass.
 
 ## Acceptance Criteria
-- [ ] `DirectoryOrganizer` integrates intelligence pipeline.
-- [ ] Existing 28 `test_directory_organizer.py` tests pass without modification.
-- [ ] 100% test pass on `test_integration_directory.py`.
+- [x] `DirectoryOrganizer` integrates intelligence pipeline.
+- [x] Existing 28 `test_directory_organizer.py` tests pass without modification.
+- [x] 100% test pass on `test_integration_directory.py`.
 
 ## Dependencies
 - Standard library and internal intelligence modules.
@@ -90,6 +102,66 @@ class DirectoryPreviewSummary:
 - Must NOT alter `FileUtils.safe_copy()`.
 
 ## Completion Checklist
-- [ ] `directory_organizer.py` updated.
-- [ ] Integration tests passing.
-- [ ] Existing test suite passing 100%.
+- [x] `directory_organizer.py` updated.
+- [x] Integration tests passing.
+- [x] Existing test suite passing 100%.
+
+## Implementation State — 2026-11-18
+
+Functional integration is complete in the local working tree. Unmatched files
+receive filesystem ingestion, configured origin detection, content extraction,
+signals, batch clustering, classification and proposal generation. Configured
+rules remain authoritative, including broad defaults. Cluster-domain hints use
+the existing correlated cluster channel and never count as independent evidence.
+Directory/extension votes no longer contaminate typed cluster root consensus.
+
+Plan items expose confidence, numeric score, evidence, cluster ID/name and source
+identity snapshots. Plans/previews expose detected cluster count and warnings;
+all appended fields have defaults, preserving existing positional constructors.
+Counts retain their existing meaning: planned moves, excluding no-ops/rejections.
+No GUI confidence/evidence display or download-watcher integration is added.
+
+Failed extraction/classification falls back per file to a fixed extension
+category with UNKNOWN confidence. Origin errors preserve content classification;
+clustering errors or the 2,000-profile graph limit preserve individual analysis.
+Unsafe proposals/rules are excluded rather than silently rerouted. Source and
+policy snapshots prevent mixing changed files or mid-batch rule edits into a
+plan. Origin opt-out prevents xattr/history probing in this pipeline.
+
+Before writes, execution rechecks root/source/target after progress callbacks,
+rejecting stale identities and current symlink escapes. Directory-creation
+errors are isolated per file. The collision/copy/size/hash/cleanup/delete block
+is unchanged, and `FileUtils` is unchanged. These are additional preconditions,
+not a rewrite of the six-stage protocol or a claim of kernel-enforced race-free
+execution. Cancellation retains the existing worker/transfer boundaries.
+
+Validation:
+
+- Baseline: **1,186 passed, 1 skipped**, actual exit code 0.
+- Added **46 integration tests** for real academic/archive-project hierarchies,
+  sparse inheritance, rule precedence/updates, dry-run source/tree/config
+  preservation, origin settings, isolated failures, graph budgets, exclusions,
+  stale plans, unsafe destinations, collisions, duplicates, cancellation and
+  fresh-process Qt-free imports.
+- All **28 existing directory-organizer tests pass unchanged**.
+- Full suite: **1,232 passed, 1 skipped** in 19.85 s, genuine pytest exit code
+  **0** preserved before the existing Qt teardown exit-zero hook.
+- Source compilation and whitespace checks pass. Direct source/hash comparisons
+  confirm the original transfer block and `FileUtils` are unchanged.
+
+Local 100-file preview timings with origin history detection disabled:
+
+| Fixture | Seconds | Clusters | Warnings |
+| --- | --- | ---: | ---: |
+| Markdown intelligence, three runs | 0.0541 / 0.0576 / 0.0526 | 1 | 0 |
+| Matched custom policy, three runs | 0.0139 / 0.0157 / 0.0137 | 0 | 0 |
+| PDF intelligence, one run | 23.3076 | 1 | 0 |
+
+All runs planned 100 files without moving them. The **universal one-second target
+remains outstanding**, particularly for PDF worker/backend startup and parsing
+(a known Phase 04 limitation). Enabled browser snapshots and larger/slower
+inputs can add latency. This phase introduces no persistent cache, parallel
+worker pool or global analysis deadline.
+
+See [directory-integration.md](../directory-integration.md) for exact behavior and
+boundaries. Next: **Phase 14 — Download Organizer Integration & Real-Time Profiling**.
