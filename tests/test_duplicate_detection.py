@@ -73,6 +73,13 @@ def _make_organizer(temp_dir, dest_dir, extra_config=None):
 # 1. MOVE → path reuse → new file MUST be processed
 # ===================================================================
 
+def _replace_with_distinct_file(path, content):
+    # Allocate the replacement while the original inode is still in use.
+    replacement = Path(path).with_suffix(".replacement")
+    replacement.write_text(content)
+    replacement.replace(path)
+
+
 def test_move_then_reuse_path_processes_new_file(temp_dir):
     """After a file is processed (moved), a new file at the same path must
     be treated as a new file, not silently ignored."""
@@ -92,17 +99,9 @@ def test_move_then_reuse_path_processes_new_file(temp_dir):
     # Simulate: monitor processed this file (records path + identity)
     handler.processed_files[file_path] = (time.time(), first_identity[0], first_identity[1])
 
-    # Now simulate MOVE: remove the original file, create a new one at the
-    # same path (different inode on Linux).
-    os.unlink(file_path)
-    Path(file_path).write_text("second version — completely different file")
+    _replace_with_distinct_file(file_path, "second version — completely different file")
     second_identity = _get_file_identity(file_path)
-
-    # The new file MUST have a different inode (Linux guarantees this for
-    # a fresh create after unlink).
-    assert first_identity[0] != second_identity[0], (
-        "OS reused the same inode — test cannot verify identity tracking"
-    )
+    assert first_identity != second_identity
 
     # _handle_event should detect the inode difference and process the new file
     handler._handle_event(file_path)
@@ -209,11 +208,9 @@ def test_processed_files_tracks_identity_not_just_path(temp_dir):
     handler._handle_event(file_path)
     assert file_path not in handler.pending_files
 
-    # Delete and recreate (new inode) → should be treated as new
-    os.unlink(file_path)
-    Path(file_path).write_text("different content")
+    _replace_with_distinct_file(file_path, "different content")
     new_identity = _get_file_identity(file_path)
-    assert identity[0] != new_identity[0], "OS reused inode — cannot verify"
+    assert identity != new_identity
 
     handler._handle_event(file_path)
     assert file_path in handler.pending_files
@@ -364,21 +361,16 @@ def test_get_file_identity_returns_none_for_missing():
     assert _get_file_identity("/nonexistent/path/xyz.txt") is None
 
 
-def test_get_file_identity_changes_after_recreate(temp_dir):
-    """After deleting and recreating a file at the same path, the inode
-    changes (the fundamental assumption enabling the fix)."""
+def test_get_file_identity_changes_after_replacement(temp_dir):
+    """Two distinct files at the same path produce different identities."""
     f = temp_dir / "recreate.txt"
     f.write_text("first")
     id1 = _get_file_identity(str(f))
 
-    os.unlink(str(f))
-    f.write_text("second")
+    _replace_with_distinct_file(f, "second")
     id2 = _get_file_identity(str(f))
 
-    assert id1[0] != id2[0], (
-        "Expected different inode after delete+recreate. "
-        "If this fails, the OS reused the inode (rare but possible)."
-    )
+    assert id1 != id2
 
 
 # ===================================================================
@@ -416,9 +408,7 @@ def test_pending_files_different_inode_allows_reentry(temp_dir):
     # Simulate: path is pending for the first inode
     handler.pending_files[file_path] = id1
 
-    # Delete + recreate → different inode
-    os.unlink(file_path)
-    Path(file_path).write_text("second")
+    _replace_with_distinct_file(file_path, "second")
     id2 = _get_file_identity(file_path)
     assert id1 != id2
 
